@@ -52,6 +52,10 @@ DEFAULT_PORT = 8113
 _MAX_LOG_BYTES = 512 * 1024
 # An agent with no events for this long is swept from the office.
 _STALE_SECONDS = 30 * 60
+# Seat budget for the office. Gone agents persist (a finished session stays on
+# the floor as a ghost) but are the FIRST to give up their seat when the office
+# overflows this cap — that's the "unless the screen is overflowing" escape hatch.
+_MAX_AGENTS = 72
 
 _lock = threading.Lock()
 _server_started = False
@@ -147,6 +151,34 @@ def _short(text: Any, n: int = 60) -> str:
     return s[: n - 1] + "…" if len(s) > n else s
 
 
+def _session_title(session_id: str) -> str:
+    """Look up the human-readable session title from state.db, if any.
+
+    Hermes auto-generates a title for a session after its first turn (and the
+    desktop sidebar shows it). It isn't in the hook payload, so we read it
+    from the canonical session store. Best-effort: any failure → empty string.
+    """
+    if not session_id:
+        return ""
+    try:
+        import sqlite3
+
+        db = get_hermes_home() / "state.db"
+        if not db.exists():
+            return ""
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+        try:
+            row = con.execute(
+                "SELECT title FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        finally:
+            con.close()
+        title = (row[0] if row else "") or ""
+        return title.strip()
+    except Exception:
+        return ""
+
+
 def build_state() -> Dict[str, Any]:
     """Fold the event log into {agents: [...]} for the frontend."""
     agents: Dict[str, Dict[str, Any]] = {}
@@ -167,6 +199,10 @@ def build_state() -> Dict[str, Any]:
                 "first_seen": ev.get("ts", now),
                 "updated_at": ev.get("ts", now),
             }
+            # Use the session's human-readable title as the agent's name.
+            title = _session_title(key)
+            if title:
+                a["label"] = title
             agents[key] = a
         a["updated_at"] = ev.get("ts", a["updated_at"])
         return a
@@ -181,7 +217,7 @@ def build_state() -> Dict[str, Any]:
             a = ensure(key, ev)
             a["status"] = "idle"
             plat = ev.get("platform") or ""
-            a["label"] = f"{plat or 'hermes'} {key[-6:]}"
+            a["label"] = _session_title(str(key)) or f"{plat or 'hermes'} {key[-6:]}"
             a["detail"] = "session started"
         elif kind == "session_end":
             if key in agents:
@@ -233,22 +269,33 @@ def build_state() -> Dict[str, Any]:
                 a["status"] = "working"
                 a["detail"] = ""
 
-    # Sweep stale + long-gone agents.
+    # Sweep stale agents. Gone agents (a finished session) STAY on the floor as
+    # ghosts — don't sweep them after 20s or on the stale rule. Done subagents are
+    # briefly celebrated then aged out.
     visible = []
     for a in agents.values():
         age = now - float(a.get("updated_at") or 0)
-        if a["status"] == "gone" and age > 20:
-            continue
         if a["status"] == "done" and age > 120:
             continue
-        if age > _STALE_SECONDS:
+        if a["status"] != "gone" and age > _STALE_SECONDS:
             continue
         # Agents quiet for a bit are "idle", not eternally "thinking".
         if a["status"] in ("working", "thinking") and age > 300:
             a["status"] = "idle"
         visible.append(a)
 
-    visible.sort(key=lambda a: (a["kind"] != "main", a.get("first_seen", 0)))
+    # Live agents first, gone (ghost) agents after. Within each group, main
+    # sessions before subagents, then oldest-first.
+    visible.sort(key=lambda a: (
+        a["status"] == "gone",
+        a["kind"] != "main",
+        a.get("first_seen", 0),
+    ))
+    # Overflow: cap the office at _MAX_AGENTS seats. Ghosts sit at the tail after
+    # the sort, so on overflow they're the first to leave — exactly "screen
+    # overflowing → gone agent gets out", never a live agent.
+    if len(visible) > _MAX_AGENTS:
+        visible = visible[:_MAX_AGENTS]
     return {"agents": visible, "ts": now}
 
 
