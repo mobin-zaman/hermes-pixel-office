@@ -39,6 +39,7 @@ import json
 import logging
 import os
 import socket
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -147,6 +148,59 @@ def _short(text: Any, n: int = 60) -> str:
     return s[: n - 1] + "…" if len(s) > n else s
 
 
+# Human-meaningful identifier for a session, read from the canonical
+# state.db (best-effort, cached in-process). The office folds state every
+# ~1.5 s, but a session's title/platform rarely change, so cache keyed by id.
+_meta_cache: Dict[str, Any] = {}
+
+
+def _session_meta(sid: str) -> Optional[Dict[str, Any]]:
+    """Best-effort {source, title, title_source} for a session, cached. Misses
+    re-query next poll so a title deriving right after first-seen is caught."""
+    if sid in _meta_cache:
+        return _meta_cache[sid]
+    meta: Optional[Dict[str, Any]] = None
+    try:
+        con = sqlite3.connect(
+            f"file:{get_hermes_home()}/state.db?mode=ro", uri=True, timeout=2
+        )
+        try:
+            row = con.execute(
+                "SELECT source, title, title_source FROM sessions WHERE id = ?",
+                (sid,),
+            ).fetchone()
+            if row:
+                meta = {
+                    "source": row[0] or "",
+                    "title": row[1] or "",
+                    "title_source": row[2] or "",
+                }
+        finally:
+            con.close()
+    except Exception:
+        meta = None
+    if meta:  # only cache real rows; misses re-query next poll
+        _meta_cache[sid] = meta
+    return meta
+
+
+def _main_label(ev: Dict[str, Any], key: str) -> str:
+    """Keyword-first label so the office tells *which* session an agent is.
+
+    Prefers an LLM-derived title (the auto-topic, e.g. 'Recreate Gameboy
+    portfolio site'); falls back to 'platform ±idsuffix'. A 'llm' title is a
+    real topic; 'derived' is a first-message snippet and not useful here.
+    """
+    meta = _session_meta(key) or {}
+    title, tsrc = meta.get("title", ""), meta.get("title_source", "")
+    plat = ev.get("platform") or meta.get("source") or ""
+    prefix = (plat or "hermes").lower()
+    if tsrc == "llm" and title:
+        # Keep under the frontend's 19-char label budget.
+        return f"{prefix}:{_short(title, 19)}"
+    return f"{prefix} {key[-6:]}"
+
+
 def build_state() -> Dict[str, Any]:
     """Fold the event log into {agents: [...]} for the frontend."""
     agents: Dict[str, Dict[str, Any]] = {}
@@ -181,7 +235,7 @@ def build_state() -> Dict[str, Any]:
             a = ensure(key, ev)
             a["status"] = "idle"
             plat = ev.get("platform") or ""
-            a["label"] = f"{plat or 'hermes'} {key[-6:]}"
+            a["label"] = _main_label(ev, key)
             a["detail"] = "session started"
         elif kind == "session_end":
             if key in agents:
