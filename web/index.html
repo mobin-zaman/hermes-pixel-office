@@ -2,6 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Hermes Pixel Office</title>
 <style>
   html,body{margin:0;height:100%;background:#1a1423;overflow:hidden;
@@ -16,13 +17,20 @@
     user-select:none}
   #hdr .btn:hover{border-color:#e8c170;color:#e8c170}
   #hdr .btn.on{color:#5fce7a;border-color:#5fce7a}
-  canvas{flex:1;image-rendering:pixelated;width:100%;height:100%}
+  #hdr .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  canvas{flex:1;image-rendering:pixelated;width:100%;height:100%;touch-action:none}
+  @media (max-width:560px){
+    #hdr{padding:6px 10px;flex-wrap:wrap;gap:6px 10px;font-size:12px}
+    #hdr .t{font-size:11px}
+    #hdr .dim{font-size:11px}
+    #hdr .btn{font-size:11px;padding:3px 8px}
+  }
 </style>
 </head>
 <body>
 <div id="wrap">
   <div id="hdr">
-    <span>☤ HERMES PIXEL OFFICE</span>
+    <span class="t">☤ HERMES PIXEL OFFICE</span>
     <span style="flex:1"></span>
     <span class="dim" id="count">connecting…</span>
     <span class="btn" id="sound" title="chime when an agent needs approval or a subagent finishes">♪ sound off</span>
@@ -142,7 +150,7 @@ function drawBubble(a,x,y){
 function label(a,x,y){
   ctx.font="10px ui-monospace,monospace";ctx.textAlign="center";
   ctx.fillStyle=a.kind==="subagent"?"#e8c170":"#cfc4e8";
-  ctx.fillText(a.label.slice(0,17),(x+8)*S,(y+18.5)*S);
+  ctx.fillText(a.label.slice(0,19),(x+8)*S,(y+18.5)*S);
   const st=a.status==="waiting"?"needs input!"
         :a.status==="working"?(a.tool||"working"):a.status;
   ctx.fillStyle={working:"#5fce7a",thinking:"#c9a227",idle:"#7a6f8f",
@@ -219,17 +227,67 @@ if(IN_VSCODE){spawnBtn.style.display="";
   spawnBtn.onclick=()=>vsapi.postMessage({type:"spawnAgent"});}
 
 // ── render loop ─────────────────────────────────────────────────────────
+// Camera: when more agents than fit the viewport, the office pans on hover —
+// hold the cursor near an edge and it auto-scrolls that way (edge-scroll).
+let camX = 0, camY = 0;                     // world-cells offset of viewpoint
+const EDGE_SCROLL = 42;                     // px trigger band from the edges
+const SCROLL_SPEED = 2.4;                   // grid cells / frame while hovering
+let mouse = { x: 0, y: 0 };                 // canvas-space cursor
+document.addEventListener("mousemove", (e) => {
+  const r = cv.getBoundingClientRect();
+  mouse = { x: e.clientX - r.left, y: e.clientY - r.top };
+});
+// Edge-scroll only makes sense on devices with a hover pointer; touch devices
+// pan by one-finger drag instead (see below).
+const CAN_PAN_HOVER = !window.matchMedia || window.matchMedia("(hover: hover)").matches;
+// Touch panning (mobile): one-finger drag moves the camera. Cam is clamped in
+// render, so we only adjust the offset here.
+let dragging = null;
+cv.addEventListener("touchstart", (e) => {
+  const t = e.touches[0]; dragging = { x: t.clientX, y: t.clientY };
+}, { passive: true });
+cv.addEventListener("touchmove", (e) => {
+  if (!dragging || !e.touches.length) return;
+  const t = e.touches[0], dx = t.clientX - dragging.x, dy = t.clientY - dragging.y;
+  dragging = { x: t.clientX, y: t.clientY };
+  camX -= dx / S; camY -= dy / S;
+  if (e.cancelable) e.preventDefault();
+}, { passive: false });
+cv.addEventListener("touchend", () => { dragging = null; });
 function render(){
   frame++;
   const W=cv.clientWidth,H=cv.clientHeight;
   if(cv.width!==W||cv.height!==H){cv.width=W;cv.height=H}
-  // auto-shrink pixels if the office is crowded
-  const rowsAt=s=>Math.ceil(agents.length/Math.max(1,Math.floor((W/s-8)/34)));
-  S=4; while(S>2 && 14+rowsAt(S)*32*S>H-8*S && agents.length) S--;
+  // Pixel scale stays readable (never 2px) — crowding is handled by scrolling.
+  const perRowAt=s=>Math.max(1,Math.floor((Math.floor(W/s)-8)/34));
+  S=4;
+  if(agents.length){
+    while(S>3&&14+Math.ceil(agents.length/perRowAt(S))*32*S>H-8*S)S--;
+  }
   const gw=Math.floor(W/S),gh=Math.floor(H/S);
-  drawOffice(gw,gh);
   const perRow=Math.max(1,Math.floor((gw-8)/34));
+  const rows=Math.max(1,Math.ceil(agents.length/perRow));
+  const worldH=14+rows*32+8;                // world height in grid cells
+  const maxCamY=Math.max(0,worldH-gh);
+  // Edge-scroll on hover: pan toward the mouse at the band edges.
+  if(agents.length&&maxCamY>0&&CAN_PAN_HOVER){
+    if(mouse.y<EDGE_SCROLL)camY-=SCROLL_SPEED;
+    else if(mouse.y>H-EDGE_SCROLL)camY+=SCROLL_SPEED;
+    if(mouse.x<EDGE_SCROLL)camX-=SCROLL_SPEED;
+    else if(mouse.x>W-EDGE_SCROLL)camX+=SCROLL_SPEED;
+  }
+  camY=Math.max(0,Math.min(maxCamY,camY));
+  const maxCamX=Math.max(0,(10+perRow*34)-(gw-8));
+  camX=Math.max(0,Math.min(maxCamX,camX));
   stepChars(perRow);
+  // Draw the world through the camera, clipped to the viewport.
+  ctx.save();
+  ctx.beginPath();ctx.rect(0,0,W,H);ctx.clip();
+  ctx.translate(-camX*S,-camY*S);
+  drawOffice(gw,gh);
+  // extend the floor below the viewport so scrolled rows have a floor
+  for(let y=gh;y<worldH;y++)for(let x=0;x<gw;x+=8)
+    px(x,y,8,8,((x+y)/8)%2?"#2a2138":"#251d31");
   agents.forEach((a,i)=>{
     const seat=seatPos(i,perRow);
     drawDesk(seat.x,seat.y); deskScreen(seat.x,seat.y,a);
@@ -246,6 +304,8 @@ function render(){
     if(c.phase==="out"&&!agents.find(a=>a.id===id))
       drawChar({id,kind:"main",status:"gone",activity:""},c.x,c.y,false);
   }
+  ctx.restore();
+  // scroll affordance + empty/offline overlays (screen space)
   ctx.font="13px ui-monospace";ctx.textAlign="center";
   if(offline){
     ctx.fillStyle="#d84f6f";
@@ -255,6 +315,10 @@ function render(){
   }else if(!agents.length){
     ctx.fillStyle="#7a6f8f";
     ctx.fillText("office is empty — run something in Hermes ☤",W/2,H/2);
+  }else if(maxCamY>0){
+    const barH=Math.max(20,H*Math.min(1,gh/worldH));
+    ctx.fillStyle="rgba(232,193,112,0.35)";
+    ctx.fillRect(W-4,4+camY/(worldH-gh||1)*(H-barH-8),2,barH);
   }
   requestAnimationFrame(render);
 }
