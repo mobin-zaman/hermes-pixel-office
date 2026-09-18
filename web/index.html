@@ -150,7 +150,10 @@ function drawBubble(a,x,y){
 function label(a,x,y){
   ctx.font="10px ui-monospace,monospace";ctx.textAlign="center";
   ctx.fillStyle=a.kind==="subagent"?"#e8c170":"#cfc4e8";
-  ctx.fillText(a.label.slice(0,19),(x+8)*S,(y+18.5)*S);
+  // prepend platform indicator: [tg] telegram, [dsk] desktop, [cli] CLI, [sub] subagent
+  const plat={"telegram":"tg","desktop":"dsk","cli":"cli","server":"srv","subagent":"sub"}[a.platform]||"";
+  const displayName=plat?"["+plat+"] "+a.label:a.label;
+  ctx.fillText(displayName.slice(0,24),(x+8)*S,(y+18.5)*S);
   const st=a.status==="waiting"?"needs input!"
         :a.status==="working"?(a.tool||"working"):a.status;
   ctx.fillStyle={working:"#5fce7a",thinking:"#c9a227",idle:"#7a6f8f",
