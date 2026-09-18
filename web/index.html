@@ -147,21 +147,50 @@ function drawBubble(a,x,y){
     px(x+6,y-4,1,1,"#7a6f8f");px(x+7,y-5,1,1,"#7a6f8f");
   }
 }
+function wrap(s, maxLen, maxLines) {
+  if (!s) return [];
+  const words = String(s).trim().split(/\s+/);
+  const lines = [];
+  let cur = "";
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (!cur) {
+      cur = w.length > maxLen ? w.slice(0, maxLen) : w;
+    } else if ((cur + " " + w).length <= maxLen) {
+      cur += " " + w;
+    } else {
+      lines.push(cur);
+      if (lines.length >= maxLines) { cur = ""; break; }
+      cur = w.length > maxLen ? w.slice(0, maxLen) : w;
+    }
+  }
+  if (cur && lines.length < maxLines) lines.push(cur);
+  return lines;
+}
+
 function label(a,x,y){
   ctx.font="10px ui-monospace,monospace";ctx.textAlign="center";
   ctx.fillStyle=a.kind==="subagent"?"#e8c170":"#cfc4e8";
-  // prepend platform indicator: [tg] telegram, [dsk] desktop, [cli] CLI, [sub] subagent
   const plat={"telegram":"tg","desktop":"dsk","cli":"cli","server":"srv","subagent":"sub"}[a.platform]||"";
-  const displayName=plat?"["+plat+"] "+a.label:a.label;
-  ctx.fillText(displayName.slice(0,24),(x+8)*S,(y+18.5)*S);
+  let name = a.label || "";
+  if (plat && a.platform && name.startsWith(a.platform)) {
+    name = name.slice(a.platform.length).trim();
+  }
+  const displayName = plat ? "[" + plat + "] " + name : name;
+  ctx.fillText(displayName.slice(0,16),(x+8)*S,(y+18.5)*S);
   const st=a.status==="waiting"?"needs input!"
-        :a.tool?(a.tool+": "+a.status):a.activity?a.activity:a.status;
+        :a.tool?(a.tool.length>14?a.tool.slice(0,14):a.tool):a.activity?a.activity:a.status;
   ctx.fillStyle={working:"#5fce7a",thinking:"#c9a227",idle:"#7a6f8f",
                  waiting:"#d84f6f",done:"#5fce7a",gone:"#555"}[a.status]||"#7a6f8f";
-  ctx.fillText(st.slice(0,17),(x+8)*S,(y+21.5)*S);
+  ctx.fillText(st.slice(0,16),(x+8)*S,(y+21.5)*S);
   const bot=a.topic||a.detail;
-  if(bot){ctx.fillStyle=a.topic?"#9a8fc0":"#6a5f80";
-    ctx.fillText(bot.slice(0,24),(x+8)*S,(y+24.5)*S)}
+  if(bot){
+    ctx.fillStyle=a.topic?"#9a8fc0":"#6a5f80";
+    const lines=wrap(bot,15,2);
+    lines.forEach((ln,idx)=>{
+      ctx.fillText(ln,(x+8)*S,(y+24.5+idx*3)*S);
+    });
+  }
 }
 
 // ── seats + walking ─────────────────────────────────────────────────────
