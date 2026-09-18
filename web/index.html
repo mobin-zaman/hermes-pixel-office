@@ -159,8 +159,9 @@ function label(a,x,y){
   ctx.fillStyle={working:"#5fce7a",thinking:"#c9a227",idle:"#7a6f8f",
                  waiting:"#d84f6f",done:"#5fce7a",gone:"#555"}[a.status]||"#7a6f8f";
   ctx.fillText(st.slice(0,17),(x+8)*S,(y+21.5)*S);
-  if(a.detail){ctx.fillStyle="#6a5f80";
-    ctx.fillText(a.detail.slice(0,19),(x+8)*S,(y+24.5)*S)}
+  const bot=a.topic||a.detail;
+  if(bot){ctx.fillStyle=a.topic?"#9a8fc0":"#6a5f80";
+    ctx.fillText(bot.slice(0,24),(x+8)*S,(y+24.5)*S)}
 }
 
 // ── seats + walking ─────────────────────────────────────────────────────

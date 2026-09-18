@@ -185,20 +185,21 @@ def _session_meta(sid: str) -> Optional[Dict[str, Any]]:
 
 
 def _main_label(ev: Dict[str, Any], key: str) -> str:
-    """Keyword-first label so the office tells *which* session an agent is.
-
-    Prefers an LLM-derived title (the auto-topic, e.g. 'Recreate Gameboy
-    portfolio site'); falls back to 'platform ±idsuffix'. A 'llm' title is a
-    real topic; 'derived' is a first-message snippet and not useful here.
-    """
+    """Short platform+id label, e.g. 'telegram d5c3fe'. The human topic is
+    carried separately as `topic` (see _main_topic) so the frontend can give
+    it a full line instead of cramming it into the name."""
     meta = _session_meta(key) or {}
-    title, tsrc = meta.get("title", ""), meta.get("title_source", "")
     plat = ev.get("platform") or meta.get("source") or ""
     prefix = (plat or "hermes").lower()
-    if tsrc == "llm" and title:
-        # Keep under the frontend's 19-char label budget.
-        return f"{prefix}:{_short(title, 19)}"
     return f"{prefix} {key[-6:]}"
+
+
+def _main_topic(key: str) -> str:
+    """LLM-derived session topic ('what am I working on'), '' until derived."""
+    meta = _session_meta(key) or {}
+    if meta.get("title_source") == "llm" and meta.get("title"):
+        return _short(meta["title"], 30)
+    return ""
 
 
 def build_state() -> Dict[str, Any]:
@@ -218,6 +219,7 @@ def build_state() -> Dict[str, Any]:
                 "activity": "",
                 "detail": "",
                 "platform": ev.get("platform") or "",
+                "topic": "",
                 "first_seen": ev.get("ts", now),
                 "updated_at": ev.get("ts", now),
             }
@@ -237,6 +239,14 @@ def build_state() -> Dict[str, Any]:
             plat = ev.get("platform") or ""
             a["label"] = _main_label(ev, key)
             a["detail"] = "session started"
+        elif kind == "tool_start":
+            # Labels are derived async: the LLM topic lands in state.db
+            # seconds after session_start, so re-derive main labels here
+            # (the meta cache miss path re-queries until a title appears).
+            a = ensure(key, ev)
+            if a.get("kind") == "main":
+                a["label"] = _main_label(ev, key)
+                a["topic"] = _main_topic(key)
         elif kind == "session_end":
             if key in agents:
                 agents[key]["status"] = "gone"
@@ -300,6 +310,10 @@ def build_state() -> Dict[str, Any]:
         # Agents quiet for a bit are "idle", not eternally "thinking".
         if a["status"] in ("working", "thinking") and age > 300:
             a["status"] = "idle"
+        # ponytail: topic re-derive on every fold; O(agents) DB lookups per
+        # ~1.5s poll, fine at dashboard scale — per-agent cache absorbs it.
+        if a.get("kind") == "main":
+            a["topic"] = _main_topic(a["id"])
         visible.append(a)
 
     visible.sort(key=lambda a: (a["kind"] != "main", a.get("first_seen", 0)))
