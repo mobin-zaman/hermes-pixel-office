@@ -53,6 +53,8 @@ DEFAULT_PORT = 8113
 _MAX_LOG_BYTES = 512 * 1024
 # An agent with no events for this long is swept from the office.
 _STALE_SECONDS = 30 * 60
+# Real-time tool-call feed length (newest N tool_start events surfaced in /state).
+_RECENT_FEED = 12
 
 _lock = threading.Lock()
 _server_started = False
@@ -203,8 +205,10 @@ def _main_topic(key: str) -> str:
 
 
 def build_state() -> Dict[str, Any]:
-    """Fold the event log into {agents: [...]} for the frontend."""
+    """Fold the event log into {agents: [...], recent: [...]} for the frontend."""
     agents: Dict[str, Dict[str, Any]] = {}
+    # Live tool-call feed: newest-first, newest appended as events are walked.
+    recent: List[Dict[str, Any]] = []
     now = time.time()
 
     def ensure(key: str, ev: Dict[str, Any]) -> Dict[str, Any]:
@@ -240,13 +244,25 @@ def build_state() -> Dict[str, Any]:
             a["label"] = _main_label(ev, key)
             a["detail"] = "session started"
         elif kind == "tool_start":
-            # Labels are derived async: the LLM topic lands in state.db
-            # seconds after session_start, so re-derive main labels here
-            # (the meta cache miss path re-queries until a title appears).
+            # Single tool_start branch: re-derive async labels AND set live
+            # status/tool from the call, then feed the real-time tick.
             a = ensure(key, ev)
             if a.get("kind") == "main":
                 a["label"] = _main_label(ev, key)
                 a["topic"] = _main_topic(key)
+            tool = str(ev.get("tool_name") or "")
+            a["status"] = "working"
+            a["tool"] = tool
+            a["activity"] = str(ev.get("activity") or "working")
+            a["detail"] = _short(ev.get("preview"))
+            recent.append({
+                "id": key,
+                "label": a.get("label") or _main_label(ev, key),
+                "tool": tool,
+                "activity": a["activity"],
+                "preview": a["detail"],
+                "ts": ev.get("ts", now),
+            })
         elif kind == "session_end":
             if key in agents:
                 agents[key]["status"] = "gone"
@@ -268,12 +284,6 @@ def build_state() -> Dict[str, Any]:
             if child and str(child) in agents:
                 agents[str(child)]["status"] = "done"
                 agents[str(child)]["updated_at"] = ev.get("ts", now)
-        elif kind == "tool_start":
-            a = ensure(key, ev)
-            a["status"] = "working"
-            a["tool"] = str(ev.get("tool_name") or "")
-            a["activity"] = str(ev.get("activity") or "working")
-            a["detail"] = _short(ev.get("preview"))
         elif kind == "tool_end":
             a = ensure(key, ev)
             a["status"] = "thinking"
@@ -317,7 +327,12 @@ def build_state() -> Dict[str, Any]:
         visible.append(a)
 
     visible.sort(key=lambda a: (a["kind"] != "main", a.get("first_seen", 0)))
-    return {"agents": visible, "ts": now}
+    # Newest-first, capped; trim previews late so the tick doesn't carry
+    # bytes from a brief live preview that was later truncated.
+    if recent:
+        recent.reverse()
+        recent = recent[:_RECENT_FEED]
+    return {"agents": visible, "recent": recent, "ts": now}
 
 
 # ---------------------------------------------------------------------------

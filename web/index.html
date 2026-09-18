@@ -18,12 +18,21 @@
   #hdr .btn:hover{border-color:#e8c170;color:#e8c170}
   #hdr .btn.on{color:#5fce7a;border-color:#5fce7a}
   #hdr .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #tick{height:22px;background:#241c30;border-bottom:2px solid #3a2f4b;
+    color:#cfc4e8;font-size:12px;overflow:hidden;white-space:nowrap;
+    padding:3px 14px;box-sizing:border-box;letter-spacing:.3px}
+  #tick b{color:#e8c170;font-weight:bold}
+  #tick .tk{margin-right:22px;vertical-align:middle}
+  #tick .tk.empty{color:#7a6f8f}
+  #tick .dot{display:inline-block;width:7px;height:7px;border-radius:2px;
+    margin-right:6px;vertical-align:1px}
   canvas{flex:1;image-rendering:pixelated;width:100%;height:100%;touch-action:none}
   @media (max-width:560px){
     #hdr{padding:6px 10px;flex-wrap:wrap;gap:6px 10px;font-size:12px}
     #hdr .t{font-size:11px}
     #hdr .dim{font-size:11px}
     #hdr .btn{font-size:11px;padding:3px 8px}
+    #tick{font-size:11px;padding:2px 10px}
   }
 </style>
 </head>
@@ -36,6 +45,7 @@
     <span class="btn" id="sound" title="chime when an agent needs approval or a subagent finishes">♪ sound off</span>
     <span class="btn" id="spawn" style="display:none" title="open a terminal running hermes">+ agent</span>
   </div>
+  <div id="tick"><span class="tk empty">◌ no tool calls yet</span></div>
   <canvas id="c"></canvas>
 </div>
 <script>
@@ -357,8 +367,27 @@ function render(){
 }
 
 // ── data feed: postMessage (VS Code) or poll /state (browser) ───────────
+const TICK_COL={working:"#5fce7a",running:"#d87f4f",reading:"#7fa8d8",
+  typing:"#c9a227",browsing:"#6fa8dc",delegating:"#9b6fd8",
+  waiting:"#d84f6f",error:"#d84f6f",done:"#5fce7a",idle:"#7a6f8f"};
+function renderTick(recent){
+  const el=document.getElementById("tick"); if(!el)return;
+  const rc=Array.isArray(recent)?recent:[];
+  if(!rc.length){el.innerHTML='<span class="tk empty">◌ no tool calls yet</span>';return;}
+  // A cosmetic name for the running tool, clipped for width.
+  const esc=t=>String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  const short=t=>{const s=String(t==null?"":t).replace(/\s+/g," ");
+    return s.length>34?s.slice(0,33)+"…":s;};
+  el.innerHTML=rc.map(r=>{
+    const col=TICK_COL[r.activity]||TICK_COL.working;
+    const tool=esc(r.tool)||"tool", pre=esc(short(r.preview));
+    return `<span class="tk"><span class="dot" style="background:${col}"></span>`+
+      `<b>${esc(short(r.label))}</b> › ${tool}${pre?" · "+pre:""}</span>`;
+  }).join("");
+}
 function applyState(state){
   offline=null; agents=(state&&state.agents)||[];
+  renderTick(state&&state.recent);
   const n=agents.length, w=agents.filter(a=>a.status==="waiting").length;
   document.getElementById("count").textContent=
     n+" agent"+(n===1?"":"s")+(w?" · "+w+" waiting!":"");
