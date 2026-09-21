@@ -1,5 +1,11 @@
 # Hermes Pixel Office ☤
 
+> **Personal fork** — this is [mobin-zaman](https://github.com/mobin-zaman)'s
+> personal fork of [teknium1/hermes-pixel-office](https://github.com/teknium1/hermes-pixel-office).
+> It tracks upstream and adds the extras listed under
+> [What this fork adds](#what-this-fork-adds). All credit for the original
+> plugin goes to [Teknium](https://github.com/teknium1).
+
 A pixel-art virtual office for [Hermes Agent](https://github.com/NousResearch/hermes-agent) —
 every agent session and every `delegate_task` subagent becomes an animated
 pixel character at a desk. Watch tools fire, subagents spawn and finish, and
@@ -34,9 +40,12 @@ the prompt cache.
 ## Install
 
 ```bash
-git clone https://github.com/teknium1/hermes-pixel-office ~/.hermes/plugins/pixel-office
+git clone https://github.com/mobin-zaman/hermes-pixel-office ~/.hermes/plugins/pixel-office
 hermes plugins enable pixel-office
 ```
+
+To run the original unmodified version instead, clone
+[teknium1/hermes-pixel-office](https://github.com/teknium1/hermes-pixel-office).
 
 Start a **new** Hermes session (plugins load at process start — an
 already-running session won't pick it up), make the agent do anything, and
@@ -68,6 +77,27 @@ plugins:
 
 If you change the port, point the extension setting
 `hermesPixelOffice.stateUrl` at the same port.
+
+## What this fork adds
+
+These are the changes on top of upstream:
+
+- **Per-agent model shown under each desk** — the model each session is
+  running (from `state.db`) is drawn as a blue line under the status line;
+  `auto/*` routed sessions show both the alias and the model that actually
+  served the work (ranked by tokens)
+- **Real-time tool-call tick feed** — a scrolling ticker of the latest tool
+  calls across all agents
+- **Session topic per desk** — LLM-derived session topics, wrapped into up
+  to two lines with a capped line width so labels never collide with
+  neighboring desks
+- **Status + activity on the label line** — what the agent is doing right
+  now, plus activity-driven animations
+- **Platform indicators** — `[tg]` / `[dsk]` / `[cli]` prefixes on labels
+- **Mobile-responsive office**
+
+Upstream behavior is otherwise unchanged; gone-agent handling and default
+labeling follow the original plugin.
 
 ## Try it without any agents
 
@@ -108,6 +138,15 @@ folds the log into the current office snapshot. The log auto-trims at 512 KB.
   `findstr /i pixel-office`) — you should see "registered" at session start.
 - **No `events.jsonl` appearing** — the same log now carries a WARNING line
   naming the exact exception if event writes fail.
+
+## Keeping in sync with upstream
+
+```bash
+git remote add upstream https://github.com/teknium1/hermes-pixel-office.git   # once
+git fetch upstream
+git rebase upstream/main     # or: git merge upstream/main
+git push origin main
+```
 
 ## License
 
