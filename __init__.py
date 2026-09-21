@@ -239,10 +239,12 @@ def _session_meta(sid: str) -> Optional[Dict[str, Any]]:
 
 
 def _main_label(ev: Dict[str, Any], key: str) -> str:
-    """Short platform+id label, e.g. 'telegram d5c3fe'. The human topic is
-    carried separately as `topic` (see _main_topic) so the frontend can give
-    it a full line instead of cramming it into the name."""
+    """Human label for a main agent: the session's own title, falling back to
+    platform+id. Subagents keep their goal label (see _short(child_goal))."""
     meta = _session_meta(key) or {}
+    title = (meta.get("title") or "").strip()
+    if title:
+        return title
     plat = ev.get("platform") or meta.get("source") or ""
     prefix = (plat or "hermes").lower()
     return f"{prefix} {key[-6:]}"
@@ -436,6 +438,10 @@ def _serve() -> None:
                     body = html_path.read_bytes()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
+                    # The page is JS-rendered, so an intermediate cache holding
+                    # a stale copy looks like "the office never updates"
+                    # after a plugin upgrade. Serve always-fresh.
+                    self.send_header("Cache-Control", "no-store")
                 elif self.path.split("?")[0] == "/state":
                     body = json.dumps(build_state()).encode("utf-8")
                     self.send_response(200)

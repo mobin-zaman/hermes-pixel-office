@@ -183,29 +183,40 @@ function label(a,x,y){
   ctx.fillStyle=a.kind==="subagent"?"#e8c170":"#cfc4e8";
   const plat={"telegram":"tg","desktop":"dsk","cli":"cli","server":"srv","subagent":"sub"}[a.platform]||"";
   let name = a.label || "";
+  // Label is now the session title, so it can be much longer than the old
+  // "platform 76ff8a" form. Prefix short platform tags and wrap to the desk
+  // width (17 chars covers the desk + one char of margin).
   if (plat && a.platform && name.startsWith(a.platform)) {
     name = name.slice(a.platform.length).trim();
   }
   const displayName = plat ? "[" + plat + "] " + name : name;
-  ctx.fillText(displayName.slice(0,16),(x+8)*S,(y+18.5)*S);
+  wrap(displayName, 17, 2).forEach((ln, idx) => {
+    ctx.fillText(ln.slice(0,17),(x+8)*S,(y+18.5+idx*3)*S);
+  });
+  // ponytail: title can take 2 lines; row pitch is 32 cells and the desk+
+  // sprites occupy y..y+18, so 2 label lines end at y+21.5 — clear of the
+  // next row. When the title wraps, status shifts down to stay under it.
+  const nameLines = wrap(displayName, 17, 2).length;
   const st=a.status==="waiting"?"needs input!"
         :a.tool?(a.tool.length>14?a.tool.slice(0,14):a.tool):a.activity?a.activity:a.status;
   ctx.fillStyle={working:"#5fce7a",thinking:"#c9a227",idle:"#7a6f8f",
                  waiting:"#d84f6f",done:"#5fce7a",gone:"#555"}[a.status]||"#7a6f8f";
-  ctx.fillText(st.slice(0,16),(x+8)*S,(y+21.5)*S);
+  const stY = y+21.5+(nameLines>1?3:0);
+  ctx.fillText(st.slice(0,16),(x+8)*S,stY*S);
   // model line (blue) sits above the topic/detail lines; when present the
   // topic is capped to one line so the block stays inside the row pitch.
   const hasModel=!!a.model;
+  const base = y+24.5+(nameLines>1?3:0);
   if(hasModel){
     ctx.fillStyle="#7fa8d8";
-    ctx.fillText(String(a.model).slice(0,15),(x+8)*S,(y+24.5)*S);
+    ctx.fillText(String(a.model).slice(0,15),(x+8)*S,base*S);
   }
   const bot=a.topic||a.detail;
   if(bot){
     ctx.fillStyle=a.topic?"#9a8fc0":"#6a5f80";
     const lines=wrap(bot,15,hasModel?1:2);
     lines.forEach((ln,idx)=>{
-      ctx.fillText(ln,(x+8)*S,(y+24.5+(hasModel?3:0)+idx*3)*S);
+      ctx.fillText(ln,(x+8)*S,(base+(hasModel?3:0)+idx*3)*S);
     });
   }
 }
