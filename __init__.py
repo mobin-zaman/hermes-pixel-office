@@ -145,6 +145,58 @@ def _agent_key(ev: Dict[str, Any]) -> Optional[str]:
     return f"pid-{pid}" if pid else None
 
 
+# Model label for a session, read from state.db (best-effort, cached).
+# sessions.model holds the *routed* alias (e.g. "auto/best-reasoning") which
+# may not match the model actually answering; session_model_usage holds the
+# real per-call models. We show both when they differ.
+_model_cache: Dict[str, Any] = {}
+_MODEL_TTL = 10.0
+
+
+def _model_for(sid: str) -> str:
+    """Best-effort short model label, TTL-cached so a mid-session model
+    switch lands within a few polls without re-querying every fold."""
+    now = time.time()
+    hit = _model_cache.get(sid)
+    if hit and now - hit[0] < _MODEL_TTL:
+        return hit[1]
+    label = ""
+    try:
+        con = sqlite3.connect(
+            f"file:{get_hermes_home()}/state.db?mode=ro", uri=True, timeout=2
+        )
+        try:
+            row = con.execute(
+                "SELECT model FROM sessions WHERE id = ?", (sid,)
+            ).fetchone()
+            routed = (row[0] if row else "") or ""
+            if routed:
+                label = routed
+            # If the session is routed through an alias, the models actually
+            # serving the calls are in session_model_usage; show the one that
+            # did the real work. api_call_count is misleading here (one huge
+            # call counts the same as one tiny one), so rank by tokens.
+            if "auto/" in routed:
+                used = [
+                    r[0]
+                    for r in con.execute(
+                        "SELECT model FROM session_model_usage "
+                        "WHERE session_id = ? AND model NOT LIKE 'auto/%' "
+                        "ORDER BY (input_tokens + output_tokens) DESC LIMIT 1",
+                        (sid,),
+                    )
+                ]
+                if used:
+                    label = f"{routed}→{used[0]}"
+        finally:
+            con.close()
+    except Exception:
+        label = ""
+    if label:
+        _model_cache[sid] = (now, label)
+    return label
+
+
 def _short(text: Any, n: int = 60) -> str:
     s = str(text or "").strip().replace("\n", " ")
     return s[: n - 1] + "…" if len(s) > n else s
@@ -223,12 +275,15 @@ def build_state() -> Dict[str, Any]:
                 "activity": "",
                 "detail": "",
                 "platform": ev.get("platform") or "",
+                "model": "",
                 "topic": "",
                 "first_seen": ev.get("ts", now),
                 "updated_at": ev.get("ts", now),
             }
             agents[key] = a
         a["updated_at"] = ev.get("ts", a["updated_at"])
+        if not a.get("model"):
+            a["model"] = _model_for(key)
         return a
 
     for ev in _read_events():
@@ -323,6 +378,7 @@ def build_state() -> Dict[str, Any]:
         # ponytail: topic re-derive on every fold; O(agents) DB lookups per
         # ~1.5s poll, fine at dashboard scale — per-agent cache absorbs it.
         if a.get("kind") == "main":
+            a["model"] = _model_for(a["id"]) or a.get("model") or ""
             a["topic"] = _main_topic(a["id"])
         visible.append(a)
 

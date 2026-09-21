@@ -193,12 +193,19 @@ function label(a,x,y){
   ctx.fillStyle={working:"#5fce7a",thinking:"#c9a227",idle:"#7a6f8f",
                  waiting:"#d84f6f",done:"#5fce7a",gone:"#555"}[a.status]||"#7a6f8f";
   ctx.fillText(st.slice(0,16),(x+8)*S,(y+21.5)*S);
+  // model line (blue) sits above the topic/detail lines; when present the
+  // topic is capped to one line so the block stays inside the row pitch.
+  const hasModel=!!a.model;
+  if(hasModel){
+    ctx.fillStyle="#7fa8d8";
+    ctx.fillText(String(a.model).slice(0,15),(x+8)*S,(y+24.5)*S);
+  }
   const bot=a.topic||a.detail;
   if(bot){
     ctx.fillStyle=a.topic?"#9a8fc0":"#6a5f80";
-    const lines=wrap(bot,15,2);
+    const lines=wrap(bot,15,hasModel?1:2);
     lines.forEach((ln,idx)=>{
-      ctx.fillText(ln,(x+8)*S,(y+24.5+idx*3)*S);
+      ctx.fillText(ln,(x+8)*S,(y+24.5+(hasModel?3:0)+idx*3)*S);
     });
   }
 }
