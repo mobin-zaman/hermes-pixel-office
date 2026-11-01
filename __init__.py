@@ -55,6 +55,12 @@ _MAX_LOG_BYTES = 512 * 1024
 _STALE_SECONDS = 30 * 60
 # Real-time tool-call feed length (newest N tool_start events surfaced in /state).
 _RECENT_FEED = 12
+# How many recent transcript rows form one agent's live "what is it doing/
+# thinking" tail, and how long that tail is cached (state.db is 700MB+; the
+# index makes a per-agent query ~25ms, the TTL keeps several open tabs from
+# re-querying the same session on every poll).
+_LIVE_ROWS = 8
+_LIVE_TTL = 1.0
 
 _lock = threading.Lock()
 _server_started = False
@@ -258,11 +264,74 @@ def _main_topic(key: str) -> str:
     return ""
 
 
+_live_cache: Dict[str, Any] = {}
+
+
+def _live_for(sid: str) -> Dict[str, Any]:
+    """Live transcript tail for one session: what it is thinking, saying, and
+    the last few tool steps — read straight from state.db.
+
+    state.db is written per message (reasoning included) as the turn runs, so
+    this IS the real-time signal: no plugin stream hook, no reasoning-delta
+    opt-in, and it works for sessions in every other Hermes process, subagents
+    included. Best-effort: any failure yields an empty tail, never an error.
+    """
+    now = time.time()
+    hit = _live_cache.get(sid)
+    if hit and now - hit[0] < _LIVE_TTL:
+        return hit[1]
+    out: Dict[str, Any] = {"think": "", "say": "", "steps": [], "last_ts": 0.0}
+    steps: List[Dict[str, Any]] = []
+    try:
+        con = sqlite3.connect(
+            f"file:{get_hermes_home()}/state.db?mode=ro", uri=True, timeout=2
+        )
+        try:
+            rows = con.execute(
+                "SELECT role, tool_name, substr(content,1,700), "
+                "substr(coalesce(nullif(reasoning_content,''), reasoning, ''),1,900), "
+                "timestamp FROM messages WHERE session_id = ? "
+                "ORDER BY id DESC LIMIT ?",
+                (sid, _LIVE_ROWS),
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return out
+    for role, tool, content, reasoning, ts in rows:  # newest first
+        ts = float(ts or 0)
+        out["last_ts"] = max(out["last_ts"], ts)
+        think = _short(reasoning, 700)
+        if think and not out["think"]:
+            out["think"] = think
+            steps.append({"t": "think", "p": _short(reasoning, 260), "ts": ts})
+        body = str(content or "").strip()
+        if role == "tool":
+            steps.append({
+                "t": "tool", "n": str(tool or "tool"),
+                "p": _short(body.splitlines()[0] if body else "", 150), "ts": ts,
+            })
+        elif role == "assistant" and body:
+            if not out["say"]:
+                out["say"] = _short(body, 700)
+            steps.append({"t": "say", "p": _short(body, 260), "ts": ts})
+        elif role == "user" and body:
+            steps.append({"t": "user", "p": _short(body, 150), "ts": ts})
+    out["steps"] = steps[:6]
+    _live_cache[sid] = (now, out)
+    if len(_live_cache) > 200:  # ponytail: blunt cap; a long-lived server only
+        _live_cache.clear()     # ever needs the handful of live sessions.
+    return out
+
+
 def build_state() -> Dict[str, Any]:
     """Fold the event log into {agents: [...], recent: [...]} for the frontend."""
     agents: Dict[str, Dict[str, Any]] = {}
     # Live tool-call feed: newest-first, newest appended as events are walked.
     recent: List[Dict[str, Any]] = []
+    # key → the tick entry for that agent's in-flight call, so tool_end can
+    # stamp the outcome (ok/error + duration) onto the same tick.
+    inflight: Dict[str, Dict[str, Any]] = {}
     now = time.time()
 
     def ensure(key: str, ev: Dict[str, Any]) -> Dict[str, Any]:
@@ -279,6 +348,7 @@ def build_state() -> Dict[str, Any]:
                 "platform": ev.get("platform") or "",
                 "model": "",
                 "topic": "",
+                "live": {},
                 "first_seen": ev.get("ts", now),
                 "updated_at": ev.get("ts", now),
             }
@@ -311,15 +381,17 @@ def build_state() -> Dict[str, Any]:
             a["status"] = "working"
             a["tool"] = tool
             a["activity"] = str(ev.get("activity") or "working")
-            a["detail"] = _short(ev.get("preview"))
-            recent.append({
+            a["detail"] = _short(ev.get("preview"), 180)
+            entry = {
                 "id": key,
                 "label": a.get("label") or _main_label(ev, key),
                 "tool": tool,
                 "activity": a["activity"],
                 "preview": a["detail"],
                 "ts": ev.get("ts", now),
-            })
+            }
+            recent.append(entry)
+            inflight[key] = entry
         elif kind == "session_end":
             if key in agents:
                 agents[key]["status"] = "gone"
@@ -345,7 +417,12 @@ def build_state() -> Dict[str, Any]:
             a = ensure(key, ev)
             a["status"] = "thinking"
             a["tool"] = ""
-            if ev.get("status") == "error":
+            ok = ev.get("status") != "error"
+            e = inflight.pop(key, None)
+            if e is not None:  # stamp the outcome onto its tick
+                e["status"] = "ok" if ok else "error"
+                e["dur"] = ev.get("duration_ms")
+            if not ok:
                 a["detail"] = f"⚠ {_short(ev.get('error_message'), 40)}"
             else:
                 a["detail"] = ""
@@ -382,6 +459,7 @@ def build_state() -> Dict[str, Any]:
         if a.get("kind") == "main":
             a["model"] = _model_for(a["id"]) or a.get("model") or ""
             a["topic"] = _main_topic(a["id"])
+        a["live"] = _live_for(a["id"])
         visible.append(a)
 
     visible.sort(key=lambda a: (a["kind"] != "main", a.get("first_seen", 0)))
@@ -427,6 +505,7 @@ def _serve() -> None:
 
     _port = _resolve_port()
     html_path = Path(__file__).resolve().parent / "web" / "index.html"
+    web_dir = html_path.parent
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args: Any) -> None:  # silence stdout
@@ -442,6 +521,21 @@ def _serve() -> None:
                     # a stale copy looks like "the office never updates"
                     # after a plugin upgrade. Serve always-fresh.
                     self.send_header("Cache-Control", "no-store")
+                elif self.path.split("?")[0] == "/manifest.json":
+                    body = (web_dir / "manifest.json").read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/manifest+json")
+                    self.send_header("Cache-Control", "no-store")
+                elif self.path.split("?")[0] == "/sw.js":
+                    body = (web_dir / "sw.js").read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/javascript")
+                    self.send_header("Cache-Control", "no-store")
+                elif self.path.split("?")[0] in ("/icon-512.png", "/icon-maskable-512.png"):
+                    body = (web_dir / self.path.lstrip("/")).read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Cache-Control", "max-age=604800")
                 elif self.path.split("?")[0] == "/state":
                     body = json.dumps(build_state()).encode("utf-8")
                     self.send_response(200)
@@ -552,7 +646,9 @@ def _pre_tool_call(**kw: Any) -> None:
         "session_id": sid,
         "tool_name": tool,
         "activity": _activity_for(tool),
-        "preview": _short(preview),
+        # 200 chars: the office panel shows the real command/path, and the
+        # canvas still wraps to a few short lines. Log trim keeps the file small.
+        "preview": _short(preview, 200),
     })
     return None  # observer — never blocks
 

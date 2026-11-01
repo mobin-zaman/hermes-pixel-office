@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Hermes Pixel Office</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#1a1423">
+<link rel="icon" href="/icon-512.png">
+<script>
+if ('serviceWorker' in navigator) {
+  addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+}
+</script>
 <style>
   html,body{margin:0;height:100%;background:#1a1423;overflow:hidden;
     font-family:ui-monospace,Menlo,Consolas,monospace}
@@ -26,7 +34,41 @@
   #tick .tk.empty{color:#7a6f8f}
   #tick .dot{display:inline-block;width:7px;height:7px;border-radius:2px;
     margin-right:6px;vertical-align:1px}
-  canvas{flex:1;image-rendering:pixelated;width:100%;height:100%;touch-action:none}
+  #wrap{overflow:hidden}
+  #main{flex:1;display:flex;min-height:0;position:relative}
+  canvas{flex:1;min-width:0;image-rendering:pixelated;width:100%;height:100%;touch-action:none;zoom:1.15}
+  /* ── detail panel: what each agent is doing / thinking right now ─────── */
+  #panel{width:400px;flex:0 0 400px;border-left:2px solid #3a2f4b;
+    background:#1c1628;overflow-y:auto;padding:7px 8px;font-size:11.5px;
+    display:flex;flex-direction:column;gap:8px;line-height:1.45}
+  #panel.hide{display:none}
+  #panel .empty{color:#7a6f8f;padding:8px 2px}
+  .card{background:#241c30;border:1px solid #33283f;border-radius:4px;padding:6px 7px}
+  .card .h{display:flex;align-items:center;gap:6px;margin-bottom:2px}
+  .card .h b{color:#e8c9a0;font-weight:bold;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .card .h .chip{margin-left:auto;font-size:10px;color:#cfc4e8;border:1px solid #3a2f4b;
+    border-radius:3px;padding:0 5px;white-space:nowrap}
+  .card .dot{width:7px;height:7px;border-radius:2px;flex:0 0 7px}
+  .card .m{color:#7a6f8f;font-size:10.5px;margin-bottom:3px}
+  .card .now{color:#5fce7a;word-break:break-word;margin-bottom:3px}
+  .card .lb{display:inline-block;font-size:9.5px;letter-spacing:.6px;
+    text-transform:uppercase;color:#7a6f8f;margin-right:5px}
+  .card .think{color:#c9a227;border-left:2px solid #4a3a1e;padding-left:6px;
+    margin:4px 0;word-break:break-word}
+  .card .say{color:#9fb8d8;border-left:2px solid #2a3a4a;padding-left:6px;
+    margin:4px 0;word-break:break-word}
+  .card .now .lb{color:#5fce7a}
+  .card ol.steps{list-style:none;margin:5px 0 0;padding:0}
+  .card ol.steps li{color:#a89ec4;font-size:10.5px;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;padding:1px 0;border-top:1px dashed #2c2338}
+  .card ol.steps .ty{font-size:9.5px;text-transform:uppercase;letter-spacing:.4px}
+  @media (max-width:900px){
+    /* bottom sheet over the office — tall enough to read, dismissable */
+    #panel{position:absolute;left:0;right:0;bottom:0;top:50%;width:auto;
+      flex:none;border-left:0;border-top:2px solid #3a2f4b;
+      background:rgba(28,22,40,.97);z-index:5}
+  }
   @media (max-width:560px){
     #hdr{padding:6px 10px;flex-wrap:wrap;gap:6px 10px;font-size:12px}
     #hdr .t{font-size:11px}
@@ -42,11 +84,15 @@
     <span class="t">☤ HERMES PIXEL OFFICE</span>
     <span style="flex:1"></span>
     <span class="dim" id="count">connecting…</span>
+    <span class="btn on" id="panelBtn" title="what each agent is doing and thinking">▤ detail</span>
     <span class="btn" id="sound" title="chime when an agent needs approval or a subagent finishes">♪ sound off</span>
     <span class="btn" id="spawn" style="display:none" title="open a terminal running hermes">+ agent</span>
   </div>
   <div id="tick"><span class="tk empty">◌ no tool calls yet</span></div>
-  <canvas id="c"></canvas>
+  <div id="main">
+    <canvas id="c"></canvas>
+    <aside id="panel"></aside>
+  </div>
 </div>
 <script>
 "use strict";
@@ -315,6 +361,23 @@ cv.addEventListener("touchmove", (e) => {
   if (e.cancelable) e.preventDefault();
 }, { passive: false });
 cv.addEventListener("touchend", () => { dragging = null; });
+// Double-tap the office to toggle fullscreen (gesture-gated — the canvas sits
+// behind Chrome's URL bar until then). Use pointerdown (fires immediately and
+// reliably from both synthetic and real touches on Chrome/Go). Harmless in VS Code.
+let lastTap = 0;
+cv.addEventListener("dblclick", requestFullWin);
+cv.addEventListener("pointerdown", () => {
+  const now = Date.now();
+  if (now - lastTap < 600) requestFullWin();
+  lastTap = now;
+});
+function requestFullWin() {
+  const el = document.fullscreenElement ? document : cv;
+  if (document.fullscreenEnabled) {
+    (document.fullscreenElement ? document.exitFullscreen() : cv.requestFullscreen())
+      .catch(() => {});
+  }
+}
 function render(){
   frame++;
   const W=cv.clientWidth,H=cv.clientHeight;
@@ -399,13 +462,69 @@ function renderTick(recent){
   el.innerHTML=rc.map(r=>{
     const col=TICK_COL[r.activity]||TICK_COL.working;
     const tool=esc(r.tool)||"tool", pre=esc(short(r.preview));
+    const res=r.status==="error"?'<span style="color:#d84f6f"> ✗</span>'
+      :r.status==="ok"?`<span style="color:#5fce7a"> ✓${r.dur?' '+r.dur+'ms':''}</span>`:"";
     return `<span class="tk"><span class="dot" style="background:${col}"></span>`+
-      `<b>${esc(short(r.label))}</b> › ${tool}${pre?" · "+pre:""}</span>`;
+      `<b>${esc(short(r.label))}</b> › ${tool}${pre?" · "+pre:""}${res}</span>`;
   }).join("");
+}
+// ── detail panel: what each agent is doing / thinking right now ──────────
+// Backend folds /state from state.db's live transcript tail (`live`), so the
+// thinking text below is the agent's actual latest reasoning, per poll.
+const panelEl=document.getElementById("panel"), panelBtn=document.getElementById("panelBtn");
+let panelOn=window.innerWidth>=900;
+try{const v=localStorage.getItem("pixelOfficePanel"); if(v!==null)panelOn=v==="1";}catch(e){}
+function syncPanel(){panelEl.classList.toggle("hide",!panelOn);
+  panelBtn.classList.toggle("on",panelOn)}
+panelBtn.onclick=()=>{panelOn=!panelOn;
+  try{localStorage.setItem("pixelOfficePanel",panelOn?"1":"0")}catch(e){}
+  syncPanel()};
+syncPanel();
+const STCOL={working:"#5fce7a",thinking:"#c9a227",idle:"#7a6f8f",
+  waiting:"#d84f6f",done:"#5fce7a",gone:"#555"};
+const TYPCOL={think:"#c9a227",say:"#7fa8d8",tool:"#9b6fd8",user:"#5fce7a"};
+const pEsc=t=>String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const flat=t=>String(t==null?"":t).replace(/\s+/g," ").trim();
+// The newest part of a thought/speech is what the agent is on right now.
+function tail(s,n){s=flat(s);return s.length>n?"…"+s.slice(-n):s;}
+function ago(ts){if(!ts)return"";const d=Math.max(0,Date.now()/1000-ts);
+  return d<1?"now":d<60?Math.round(d)+"s ago":d<3600?Math.round(d/60)+"m ago"
+    :Math.round(d/3600)+"h ago";}
+let panelSig="";
+function card(a){
+  const L=a.live||{}, st=a.status||"idle";
+  const now=st==="waiting"?"needs input! "+(a.detail||"")
+    :a.tool?a.tool+(a.detail?" › "+a.detail:""):(a.activity||st);
+  const steps=(L.steps||[]).map(s=>
+    `<li><span class="ty" style="color:${TYPCOL[s.t]||"#888"}">${pEsc(s.t)}</span> `+
+    `${pEsc(flat((s.n?s.n+" · ":"")+(s.p||"")).slice(0,170))}</li>`).join("");
+  const think=flat(L.think), say=flat(L.say);
+  return `<div class="card">
+    <div class="h"><span class="dot" style="background:${STCOL[st]||"#7a6f8f"}"></span>
+      <b>${pEsc(a.label||a.id)}</b><span class="chip">${pEsc(st)}</span></div>
+    <div class="m">${pEsc([a.platform||(a.kind==="subagent"?"subagent":""),
+      a.model,ago(L.last_ts||a.updated_at)].filter(Boolean).join(" · "))}</div>
+    <div class="now"><span class="lb">now</span>${pEsc(tail(now,300))}</div>
+    ${think?`<div class="think"><span class="lb">thinking</span>${pEsc(tail(think,460))}</div>`:""}
+    ${say?`<div class="say"><span class="lb">said</span>${pEsc(tail(say,240))}</div>`:""}
+    ${steps?`<ol class="steps">${steps}</ol>`:""}
+  </div>`;
+}
+function renderPanel(list){
+  if(!panelOn)return;
+  const sig=JSON.stringify(list.map(a=>[a.id,a.status,a.tool,a.detail,a.label,
+    (a.live||{}).think,(a.live||{}).say,((a.live||{}).steps||[]).length]));
+  if(sig===panelSig)return;              // no change → keep scroll position
+  panelSig=sig;
+  const keep=panelEl.scrollTop;
+  panelEl.innerHTML=list.length?list.map(card).join("")
+    :'<div class="empty">office is empty — run something in Hermes ☤</div>';
+  panelEl.scrollTop=keep;
 }
 function applyState(state){
   offline=null; agents=(state&&state.agents)||[];
   renderTick(state&&state.recent);
+  renderPanel(agents);
   const n=agents.length, w=agents.filter(a=>a.status==="waiting").length;
   document.getElementById("count").textContent=
     n+" agent"+(n===1?"":"s")+(w?" · "+w+" waiting!":"");
