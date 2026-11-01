@@ -494,7 +494,7 @@ function renderTick(recent){
   const rc=Array.isArray(recent)?recent:[];
   if(!rc.length){el.innerHTML='<span class="tk empty">◌ no tool calls yet</span>';return;}
   // A cosmetic name for the running tool, clipped for width.
-  const esc=t=>String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  const esc=pEsc;
   const short=t=>{const s=String(t==null?"":t).replace(/\s+/g," ");
     return s.length>34?s.slice(0,33)+"…":s;};
   el.innerHTML=rc.map(r=>{
@@ -540,13 +540,25 @@ function head(s,n){s=flat(s);return s.length>n?s.slice(0,n-1)+"…":s;}
 function ago(ts){if(!ts)return"";const d=Math.max(0,Date.now()/1000-ts);
   return d<1?"now":d<60?Math.round(d)+"s ago":d<3600?Math.round(d/60)+"m ago"
     :Math.round(d/3600)+"h ago";}
+// ── shared line builders (spotlight + panel render the same fields) ─────
+function nowLine(a){
+  const st=a.status||"idle";
+  return st==="waiting"?"needs input! "+(a.detail||"")
+    :a.tool?a.tool+(a.detail?" › "+head(a.detail,320):""):(a.activity||st);
+}
+function lastCallLine(a){
+  const l=a.last_tool||{};
+  return l.tool?l.tool+(l.detail?" › "+head(l.detail,260):""):"";
+}
+function resultLine(L){
+  if(!L.result)return "";
+  return (L.result_tool?L.result_tool+" · ":"")+tail(L.result,400);
+}
 let panelSig="";
 function card(a){
   const L=a.live||{}, st=a.status||"idle";
-  const now=st==="waiting"?"needs input! "+(a.detail||"")
-    :a.tool?a.tool+(a.detail?" › "+head(a.detail,300):""):(a.activity||st);
-  const lt=a.last_tool||{};
-  const lastCall=lt.tool?lt.tool+(lt.detail?" › "+head(lt.detail,240):""):"";
+  const now=nowLine(a);
+  const lastCall=lastCallLine(a);
   const steps=(L.steps||[]).map(s=>
     `<li><span class="ty" style="color:${TYPCOL[s.t]||"#888"}">${pEsc(s.t)}</span> `+
     `${pEsc(flat((s.n?s.n+" · ":"")+(s.p||"")).slice(0,170))}</li>`).join("");
@@ -556,19 +568,20 @@ function card(a){
       <b>${pEsc(a.label||a.id)}</b><span class="chip">${pEsc(st)}</span></div>
     <div class="m">${pEsc([a.platform||(a.kind==="subagent"?"subagent":""),
       a.model,ago(L.last_ts||a.updated_at)].filter(Boolean).join(" · "))}</div>
-    <div class="now"><span class="lb">now</span>${pEsc(tail(now,300))}</div>
+    <div class="now"><span class="lb">now</span>${pEsc(head(now,320))}</div>
     ${lastCall?`<div class="last"><span class="lb">last call</span>${pEsc(lastCall)}</div>`:""}
     ${think?`<div class="think"><span class="lb">thinking</span>${pEsc(tail(think,460))}`+
       `<span class="ago">${pEsc(ago(L.think_ts||L.last_ts))}</span></div>`:""}
     ${say?`<div class="say"><span class="lb">said</span>${pEsc(tail(say,240))}</div>`:""}
-    ${L.result?`<div class="last"><span class="lb">last</span>${pEsc(tail(L.result,400))}</div>`:""}
+    ${L.result?`<div class="last"><span class="lb">last result</span>${pEsc(resultLine(L))}</div>`:""}
     ${steps?`<ol class="steps">${steps}</ol>`:""}
   </div>`;
 }
 function renderPanel(list){
   if(!panelOn)return;
-  const sig=JSON.stringify(list.map(a=>[a.id,a.status,a.tool,a.detail,a.label,
-    (a.live||{}).think,(a.live||{}).say,(a.live||{}).result,((a.live||{}).steps||[]).length]));
+  const sig=JSON.stringify(list.map(a=>[a.id,a.status,a.tool,a.detail,a.label,a.model,
+    (a.live||{}).think,(a.live||{}).say,(a.live||{}).result,
+    (a.live||{}).result_tool,((a.live||{}).steps||[]).length]));
   if(sig===panelSig)return;              // no change → keep scroll position
   panelSig=sig;
   const keep=panelEl.scrollTop;
@@ -605,11 +618,10 @@ function renderSpot(list){
   if(!a){spotEl.innerHTML='<div class="empty">office is empty — run something in Hermes ☤</div>';
     spotSig="";return}
   const L=a.live||{}, st=a.status||"idle";
-  const now=st==="waiting"?"needs input! "+(a.detail||"")
-    :a.tool?a.tool+(a.detail?" › "+head(a.detail,400):""):(a.activity||st);
-  const lt=a.last_tool||{};
-  const lastCall=lt.tool?lt.tool+(lt.detail?" › "+head(lt.detail,300):""):"";
-  const sig=JSON.stringify([a.id,st,a.tool,a.detail,now,L.think,L.result,L.last_ts,lastCall]);
+  const now=nowLine(a);
+  const lastCall=lastCallLine(a);
+  const sig=JSON.stringify([a.id,st,a.tool,a.detail,now,L.think,L.result,L.last_ts,
+    lastCall,a.label,a.model,L.result_tool]);
   if(sig===spotSig)return;
   spotSig=sig;
   const idx=list.findIndex(x=>x.id===a.id);
@@ -621,11 +633,11 @@ function renderSpot(list){
       <span class="chip">${pEsc(ago(L.last_ts||a.updated_at))}</span>
       <span class="sp"><span id="spotMin" title="collapse / expand">${spotMin?"▸":"▾"}</span><span id="spotPrev">◀</span><span id="spotNext">▶</span></span>
     </div>
-    <div class="now"><span class="lb">now</span>${pEsc(tail(now,400))}</div>
+    <div class="now"><span class="lb">now</span>${pEsc(head(now,400))}</div>
     ${lastCall?`<div class="last"><span class="lb">last call</span>${pEsc(lastCall)}</div>`:""}
     ${L.think?`<div class="think"><span class="lb">thinking</span>${pEsc(tail(L.think,700))}`+
       `<span class="ago">${pEsc(ago(L.think_ts||L.last_ts))}</span></div>`:""}
-    ${L.result?`<div class="last"><span class="lb">last result</span>${pEsc(tail(L.result,500))}</div>`:""}`;
+    ${L.result?`<div class="last"><span class="lb">last result</span>${pEsc(resultLine(L))}</div>`:""}`;
   const step=d=>{spotPin=list[(idx+d+list.length)%list.length].id;spotSig="";renderSpot(list)};
   const p=document.getElementById("spotPrev"), n=document.getElementById("spotNext");
   if(p)p.onclick=()=>step(-1);

@@ -13,7 +13,8 @@ assert "agents" in state and "recent" in state, "state shape broke"
 for a in state["agents"]:
     live = a.get("live")
     assert isinstance(live, dict), f"{a['id']}: missing live tail"
-    assert {"think", "say", "steps", "last_ts", "result", "think_ts"} <= set(live), f"{a['id']}: {sorted(live)}"
+    assert {"think", "say", "steps", "last_ts", "result", "think_ts",
+            "result_tool", "result_ts"} <= set(live), f"{a['id']}: {sorted(live)}"
 
 with_steps = [a for a in state["agents"] if a["live"]["steps"]]
 assert with_steps, "no agent produced live transcript steps (state.db path/index?)"
@@ -30,3 +31,14 @@ for a in with_live:
 
 print("ok:", len(state["agents"]), "agents,", len(with_steps), "with live steps,",
       len(with_live), "with think/result")
+
+# The office serves the agent's own transcript — only answer requests that
+# are addressed to us (DNS-rebinding guard).
+assert po._host_allowed("127.0.0.1:8113")
+assert po._host_allowed("localhost:8113")
+assert po._host_allowed("[::1]:8113")
+assert po._host_allowed("100.114.52.11:8113")
+assert po._host_allowed("vmi3507440-1.tail19a249.ts.net:8443")
+assert not po._host_allowed("evil.example")
+assert not po._host_allowed("attacker.test:8113")
+print("ok: host guard")

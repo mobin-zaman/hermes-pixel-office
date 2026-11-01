@@ -35,6 +35,7 @@ Nothing here touches the conversation, the prompt cache, or tool results.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
@@ -203,6 +204,34 @@ def _model_for(sid: str) -> str:
     return label
 
 
+def _host_allowed(host: str) -> bool:
+    """Reject requests whose Host header isn't ours.
+
+    The office serves the agent's own transcripts (reasoning, tool output) on
+    127.0.0.1. Without this, any web page the user visits could DNS-rebind
+    to 127.0.0.1:8113 and read /state. Browsers treat a rebound request as
+    same-origin, so only a Host check stops it.
+    """
+    h = (host or "").strip().lower()
+    if not h:
+        return True  # HTTP/1.0 client with no Host header
+    if h.startswith("["):                       # [::1]:8113
+        h = h[1:].split("]", 1)[0]
+    elif h.count(":") == 1:                     # host:port
+        h = h.split(":", 1)[0]
+    if h in ("localhost", "127.0.0.1", "::1"):
+        return True
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        pass
+    return (
+        h == socket.gethostname()
+        or h.endswith((".ts.net", ".local", ".lan", ".home.arpa"))
+    )
+
+
 def _short(text: Any, n: int = 60) -> str:
     s = str(text or "").strip().replace("\n", " ")
     return s[: n - 1] + "…" if len(s) > n else s
@@ -289,7 +318,7 @@ def _live_for(sid: str) -> Dict[str, Any]:
         return hit[1]
     out: Dict[str, Any] = {
         "think": "", "say": "", "steps": [], "last_ts": 0.0, "result": "",
-        "think_ts": 0.0,
+        "think_ts": 0.0, "result_tool": "", "result_ts": 0.0,
     }
     steps: List[Dict[str, Any]] = []
     try:
@@ -327,6 +356,8 @@ def _live_for(sid: str) -> Dict[str, Any]:
         if role == "tool":
             if not out["result"]:
                 out["result"] = _tail(tail, 600)
+                out["result_tool"] = str(tool or "tool")
+                out["result_ts"] = ts
             steps.append({
                 "t": "tool", "n": str(tool or "tool"),
                 "p": _short(body.splitlines()[0] if body else "", 150), "ts": ts,
@@ -480,6 +511,10 @@ def build_state() -> Dict[str, Any]:
         # Agents quiet for a bit are "idle", not eternally "thinking".
         if a["status"] in ("working", "thinking") and age > 300:
             a["status"] = "idle"
+            # A tool that never got a tool_end (killed process, lost event)
+            # would otherwise keep claiming the agent is running it.
+            a["tool"] = ""
+            a["detail"] = ""
         # ponytail: topic re-derive on every fold; O(agents) DB lookups per
         # ~1.5s poll, fine at dashboard scale — per-agent cache absorbs it.
         if a.get("kind") == "main":
@@ -539,6 +574,18 @@ def _serve() -> None:
 
         def do_GET(self) -> None:
             try:
+                # Only serve requests addressed to us — blocks DNS rebinding
+                # (a web page rebinding to 127.0.0.1 would otherwise be able
+                # to read the agent's reasoning and tool output).
+                host = self.headers.get("Host", "")
+                if not _host_allowed(host):
+                    body = b"forbidden host"
+                    self.send_response(403)
+                    self.send_header("Content-Type", "text/plain")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if self.path.split("?")[0] in ("/", "/index.html"):
                     body = html_path.read_bytes()
                     self.send_response(200)
