@@ -544,7 +544,8 @@ function ago(ts){if(!ts)return"";const d=Math.max(0,Date.now()/1000-ts);
 function nowLine(a){
   const st=a.status||"idle";
   return st==="waiting"?"needs input! "+(a.detail||"")
-    :a.tool?a.tool+(a.detail?" › "+head(a.detail,320):""):(a.activity||st);
+    :a.tool?a.tool+(a.detail?" › "+head(a.detail,320):"")
+    :st==="thinking"?"thinking…":(a.activity||st);
 }
 function lastCallLine(a){
   const l=a.last_tool||{};
