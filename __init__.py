@@ -340,32 +340,37 @@ def _live_for(sid: str) -> Dict[str, Any]:
             con.close()
     except Exception:
         return out
-    for role, tool, content, reasoning, tail, ts in rows:  # newest first
-        ts = float(ts or 0)
-        out["last_ts"] = max(out["last_ts"], ts)
-        body = str(content or "").strip()
-        # A user row ends the turn: any reasoning BELOW it belongs to an older
-        # turn, so it must not be shown as the agent's current thought.
-        if role == "user":
-            break
-        think = _tail(reasoning, 900)
-        if think and not out["think"]:
-            out["think"] = think
-            out["think_ts"] = ts
-            steps.append({"t": "think", "p": _tail(reasoning, 260), "ts": ts})
-        if role == "tool":
-            if not out["result"]:
-                out["result"] = _tail(tail, 600)
-                out["result_tool"] = str(tool or "tool")
-                out["result_ts"] = ts
-            steps.append({
-                "t": "tool", "n": str(tool or "tool"),
-                "p": _short(body.splitlines()[0] if body else "", 150), "ts": ts,
-            })
-        elif role == "assistant" and body:
-            if not out["say"]:
-                out["say"] = _short(body, 700)
-            steps.append({"t": "say", "p": _short(body, 260), "ts": ts})
+    # Best-effort contract: a malformed row must not raise through build_state
+    # (which would 500 /state and blank the office).
+    try:
+        for role, tool, content, reasoning, tail, ts in rows:  # newest first
+            ts = float(ts or 0)
+            out["last_ts"] = max(out["last_ts"], ts)
+            body = str(content or "").strip()
+            # A user row ends the turn: any reasoning BELOW it belongs to an
+            # older turn, so it must not be shown as the current thought.
+            if role == "user":
+                break
+            think = _tail(reasoning, 900)
+            if think and not out["think"]:
+                out["think"] = think
+                out["think_ts"] = ts
+                steps.append({"t": "think", "p": _tail(reasoning, 260), "ts": ts})
+            if role == "tool":
+                if not out["result"]:
+                    out["result"] = _tail(tail, 600)
+                    out["result_tool"] = str(tool or "tool")
+                    out["result_ts"] = ts
+                steps.append({
+                    "t": "tool", "n": str(tool or "tool"),
+                    "p": _short(body.splitlines()[0] if body else "", 150), "ts": ts,
+                })
+            elif role == "assistant" and body:
+                if not out["say"]:
+                    out["say"] = _short(body, 700)
+                steps.append({"t": "say", "p": _short(body, 260), "ts": ts})
+    except Exception:
+        logger.debug("pixel-office: live row parse failed for %s", sid, exc_info=True)
     out["steps"] = steps[:6]
     _live_cache[sid] = (now, out)
     if len(_live_cache) > 200:  # ponytail: blunt cap; a long-lived server only
@@ -487,7 +492,7 @@ def build_state() -> Dict[str, Any]:
             a = ensure(key, ev)
             a["status"] = "waiting"
             a["tool"] = ""
-            a["detail"] = _short(ev.get("command"), 40) or "needs approval"
+            a["detail"] = _short(ev.get("command"), 400) or "needs approval"
         elif kind == "approval_response":
             a = ensure(key, ev)
             choice = str(ev.get("choice") or "")
@@ -515,6 +520,7 @@ def build_state() -> Dict[str, Any]:
             # would otherwise keep claiming the agent is running it.
             a["tool"] = ""
             a["detail"] = ""
+            a["activity"] = ""
         # ponytail: topic re-derive on every fold; O(agents) DB lookups per
         # ~1.5s poll, fine at dashboard scale — per-agent cache absorbs it.
         if a.get("kind") == "main":

@@ -581,7 +581,8 @@ function renderPanel(list){
   if(!panelOn)return;
   const sig=JSON.stringify(list.map(a=>[a.id,a.status,a.tool,a.detail,a.label,a.model,
     (a.live||{}).think,(a.live||{}).say,(a.live||{}).result,
-    (a.live||{}).result_tool,((a.live||{}).steps||[]).length]));
+    (a.live||{}).result_tool,((a.live||{}).steps||[]).length,
+    Math.floor(Date.now()/15000)]));   // keep the "12s ago" chips ticking
   if(sig===panelSig)return;              // no change → keep scroll position
   panelSig=sig;
   const keep=panelEl.scrollTop;
@@ -602,15 +603,32 @@ function syncSpot(){spotEl.classList.toggle("off",!spotOn);
   spotBtn.classList.toggle("on",spotOn)}
 spotBtn.onclick=()=>{spotOn=!spotOn;
   try{localStorage.setItem("pixelOfficeSpot",spotOn?"1":"0")}catch(e){}
-  syncSpot()};
+  syncSpot(); spotSig=""; renderSpot(agents)};   // re-render now, not next poll
 syncSpot();
 function focusAgent(list){
   if(!list.length)return null;
-  if(spotPin){const p=list.find(a=>a.id===spotPin); if(p)return p;}
+  if(spotPin){const p=list.find(a=>a.id===spotPin); if(p)return p; spotPin=null;}
   // most recently touched agent wins (live.last_ts, else updated_at)
   return list.slice().sort((x,y)=>
     ((y.live&&y.live.last_ts)||y.updated_at||0)-((x.live&&x.live.last_ts)||x.updated_at||0))[0];
 }
+// One delegated handler for the spotlight's own controls: the inner nodes are
+// replaced by innerHTML on every repaint, and a captured `list` would go stale
+// as agents leave the office (it shrinks every poll). Read the live array.
+spotEl.addEventListener("click",(e)=>{
+  const id=e.target.id;
+  if(id==="spotPrev"||id==="spotNext"){
+    const list=agents; if(!list.length)return;
+    const cur=focusAgent(list), idx=list.findIndex(x=>x.id===(cur&&cur.id));
+    const d=id==="spotPrev"?-1:1;
+    spotPin=list[(idx+d+list.length)%list.length].id;
+  }else if(id==="spotMin"){
+    spotMin=!spotMin;
+    try{localStorage.setItem("pixelOfficeSpotMin",spotMin?"1":"0")}catch(e){}
+    syncSpot();
+  }else return;
+  spotSig=""; renderSpot(agents);
+});
 let spotSig="";
 function renderSpot(list){
   if(!spotOn){spotEl.innerHTML="";spotSig="";return}
@@ -620,11 +638,12 @@ function renderSpot(list){
   const L=a.live||{}, st=a.status||"idle";
   const now=nowLine(a);
   const lastCall=lastCallLine(a);
+  // The 15s bucket keeps the "12s ago" chips ticking: without a changing
+  // field both renderers early-return and the clock freezes on screen.
   const sig=JSON.stringify([a.id,st,a.tool,a.detail,now,L.think,L.result,L.last_ts,
-    lastCall,a.label,a.model,L.result_tool]);
+    lastCall,a.label,a.model,L.result_tool,Math.floor(Date.now()/15000)]);
   if(sig===spotSig)return;
   spotSig=sig;
-  const idx=list.findIndex(x=>x.id===a.id);
   spotEl.innerHTML=`<div class="sh">
       <span class="dot" style="background:${STCOL[st]||"#7a6f8f"}"></span>
       <b>${pEsc(a.label||a.id)}</b>
@@ -638,14 +657,6 @@ function renderSpot(list){
     ${L.think?`<div class="think"><span class="lb">thinking</span>${pEsc(tail(L.think,700))}`+
       `<span class="ago">${pEsc(ago(L.think_ts||L.last_ts))}</span></div>`:""}
     ${L.result?`<div class="last"><span class="lb">last result</span>${pEsc(resultLine(L))}</div>`:""}`;
-  const step=d=>{spotPin=list[(idx+d+list.length)%list.length].id;spotSig="";renderSpot(list)};
-  const p=document.getElementById("spotPrev"), n=document.getElementById("spotNext");
-  if(p)p.onclick=()=>step(-1);
-  if(n)n.onclick=()=>step(1);
-  const mn=document.getElementById("spotMin");
-  if(mn)mn.onclick=()=>{spotMin=!spotMin;
-    try{localStorage.setItem("pixelOfficeSpotMin",spotMin?"1":"0")}catch(e){}
-    syncSpot();spotSig="";renderSpot(list)};
 }
 function applyState(state){
   offline=null; agents=(state&&state.agents)||[];
