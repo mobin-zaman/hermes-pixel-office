@@ -101,8 +101,9 @@ if ('serviceWorker' in navigator) {
       background:rgba(28,22,40,.97);z-index:5}
     /* the panel sheet owns the bottom half on phones — spotlight sits on top */
     #spot{bottom:auto;top:10px;left:8px;right:8px;max-width:none;font-size:12px;
-      max-height:42vh;overflow:auto}
+      max-height:38vh;overflow:auto}
     #spot.min{max-height:none;overflow:hidden}
+    #spot .think,#spot .last{max-height:3.4em}
   }
   @media (max-width:560px){
     #hdr{padding:6px 10px;flex-wrap:wrap;gap:6px 10px;font-size:12px}
@@ -582,8 +583,7 @@ const spotEl=document.getElementById("spot"), spotBtn=document.getElementById("s
 let spotOn=true, spotPin=null, spotMin=false;
 try{const v=localStorage.getItem("pixelOfficeSpot"); if(v!==null)spotOn=v==="1";}catch(e){}
 try{const v=localStorage.getItem("pixelOfficeSpotMin"); if(v!==null)spotMin=v==="1";
-  else spotMin=window.innerWidth<900;   // phones start collapsed: canvas stays visible
-}catch(e){spotMin=window.innerWidth<900;}
+}catch(e){}
 function syncSpot(){spotEl.classList.toggle("off",!spotOn);
   spotEl.classList.toggle("min",spotMin);
   spotBtn.classList.toggle("on",spotOn)}
