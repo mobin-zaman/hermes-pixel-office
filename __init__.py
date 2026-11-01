@@ -280,16 +280,21 @@ def _live_for(sid: str) -> Dict[str, Any]:
     hit = _live_cache.get(sid)
     if hit and now - hit[0] < _LIVE_TTL:
         return hit[1]
-    out: Dict[str, Any] = {"think": "", "say": "", "steps": [], "last_ts": 0.0}
+    out: Dict[str, Any] = {
+        "think": "", "say": "", "steps": [], "last_ts": 0.0, "result": "",
+    }
     steps: List[Dict[str, Any]] = []
     try:
         con = sqlite3.connect(
             f"file:{get_hermes_home()}/state.db?mode=ro", uri=True, timeout=2
         )
         try:
+            # reasoning/content tails (negative substr) so the newest thought
+            # and the newest tool OUTPUT are what we show, not a middle chunk.
             rows = con.execute(
                 "SELECT role, tool_name, substr(content,1,700), "
-                "substr(coalesce(nullif(reasoning_content,''), reasoning, ''),1,900), "
+                "substr(coalesce(nullif(reasoning_content,''), reasoning, ''),-1200), "
+                "substr(coalesce(content,''),-700), "
                 "timestamp FROM messages WHERE session_id = ? "
                 "ORDER BY id DESC LIMIT ?",
                 (sid, _LIVE_ROWS),
@@ -298,15 +303,17 @@ def _live_for(sid: str) -> Dict[str, Any]:
             con.close()
     except Exception:
         return out
-    for role, tool, content, reasoning, ts in rows:  # newest first
+    for role, tool, content, reasoning, tail, ts in rows:  # newest first
         ts = float(ts or 0)
         out["last_ts"] = max(out["last_ts"], ts)
-        think = _short(reasoning, 700)
+        think = _short(reasoning, 900)
         if think and not out["think"]:
             out["think"] = think
             steps.append({"t": "think", "p": _short(reasoning, 260), "ts": ts})
         body = str(content or "").strip()
         if role == "tool":
+            if not out["result"]:
+                out["result"] = _short(tail, 600)
             steps.append({
                 "t": "tool", "n": str(tool or "tool"),
                 "p": _short(body.splitlines()[0] if body else "", 150), "ts": ts,
@@ -349,6 +356,7 @@ def build_state() -> Dict[str, Any]:
                 "model": "",
                 "topic": "",
                 "live": {},
+                "last_tool": {"tool": "", "detail": "", "ts": 0.0},
                 "first_seen": ev.get("ts", now),
                 "updated_at": ev.get("ts", now),
             }
@@ -381,7 +389,14 @@ def build_state() -> Dict[str, Any]:
             a["status"] = "working"
             a["tool"] = tool
             a["activity"] = str(ev.get("activity") or "working")
-            a["detail"] = _short(ev.get("preview"), 180)
+            a["detail"] = _short(ev.get("preview"), 400)
+            # Remember the last call even after tool_end clears a["tool"], so the
+            # spotlight can still say what the agent last ran.
+            a["last_tool"] = {
+                "tool": tool,
+                "detail": a["detail"],
+                "ts": float(ev.get("ts", now)),
+            }
             entry = {
                 "id": key,
                 "label": a.get("label") or _main_label(ev, key),
@@ -646,9 +661,10 @@ def _pre_tool_call(**kw: Any) -> None:
         "session_id": sid,
         "tool_name": tool,
         "activity": _activity_for(tool),
-        # 200 chars: the office panel shows the real command/path, and the
-        # canvas still wraps to a few short lines. Log trim keeps the file small.
-        "preview": _short(preview, 200),
+        # 400 chars: the office spotlight shows the real command/path in full,
+        # and the canvas still wraps to a few short lines. Log trim keeps the
+        # file small.
+        "preview": _short(preview, 400),
     })
     return None  # observer — never blocks
 

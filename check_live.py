@@ -13,7 +13,7 @@ assert "agents" in state and "recent" in state, "state shape broke"
 for a in state["agents"]:
     live = a.get("live")
     assert isinstance(live, dict), f"{a['id']}: missing live tail"
-    assert {"think", "say", "steps", "last_ts"} <= set(live), f"{a['id']}: {sorted(live)}"
+    assert {"think", "say", "steps", "last_ts", "result"} <= set(live), f"{a['id']}: {sorted(live)}"
 
 with_steps = [a for a in state["agents"] if a["live"]["steps"]]
 assert with_steps, "no agent produced live transcript steps (state.db path/index?)"

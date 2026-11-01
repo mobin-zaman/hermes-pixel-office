@@ -37,6 +37,35 @@ if ('serviceWorker' in navigator) {
   #wrap{overflow:hidden}
   #main{flex:1;display:flex;min-height:0;position:relative}
   canvas{flex:1;min-width:0;image-rendering:pixelated;width:100%;height:100%;touch-action:none;zoom:1.15}
+  /* ── spotlight: the one agent you are watching, big and readable ─────── */
+  #spot{position:absolute;left:10px;bottom:10px;max-width:min(560px,60%);
+    background:rgba(24,18,34,.94);border:2px solid #4a3a5e;border-radius:5px;
+    padding:7px 9px;font-size:13px;line-height:1.55;color:#cfc4e8;z-index:6;
+    box-shadow:0 6px 18px rgba(0,0,0,.5)}
+  #spot.off{display:none}
+  /* collapsed: one line only, so the canvas stays visible */
+  #spot.min .think,#spot.min .last{display:none}
+  #spot.min{max-width:min(560px,90%)}
+  #spot .sh{display:flex;align-items:center;gap:6px;margin-bottom:3px}
+  #spot .sh b{color:#e8c9a0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    max-width:46%}
+  #spot .sh .chip{font-size:10px;border:1px solid #3a2f4b;border-radius:3px;
+    padding:0 5px;color:#cfc4e8;white-space:nowrap}
+  #spot .sh .sp{margin-left:auto;display:flex;gap:4px}
+  #spot .sh .sp span{cursor:pointer;color:#7a6f8f;border:1px solid #3a2f4b;
+    border-radius:3px;padding:0 5px;font-size:11px;user-select:none}
+  #spot .sh .sp span:hover{color:#e8c170;border-color:#e8c170}
+  #spot .lb{display:inline-block;font-size:9.5px;letter-spacing:.6px;
+    text-transform:uppercase;color:#7a6f8f;margin-right:5px}
+  #spot .now{color:#5fce7a;word-break:break-word;overflow-wrap:anywhere}
+  #spot .now .lb{color:#5fce7a}
+  #spot .think{color:#c9a227;border-left:2px solid #4a3a1e;padding-left:6px;
+    margin:4px 0;word-break:break-word;overflow-wrap:anywhere;max-height:5.2em;overflow:hidden}
+  #spot .think .lb{color:#c9a227}
+  #spot .last{color:#7fa8d8;border-left:2px solid #2a3a4a;padding-left:6px;
+    margin:4px 0;word-break:break-word;overflow-wrap:anywhere;max-height:5.2em;overflow:hidden}
+  #spot .last .lb{color:#7fa8d8}
+  #spot .empty{color:#7a6f8f}
   /* ── detail panel: what each agent is doing / thinking right now ─────── */
   #panel{width:400px;flex:0 0 400px;border-left:2px solid #3a2f4b;
     background:#1c1628;overflow-y:auto;padding:7px 8px;font-size:11.5px;
@@ -68,6 +97,10 @@ if ('serviceWorker' in navigator) {
     #panel{position:absolute;left:0;right:0;bottom:0;top:50%;width:auto;
       flex:none;border-left:0;border-top:2px solid #3a2f4b;
       background:rgba(28,22,40,.97);z-index:5}
+    /* the panel sheet owns the bottom half on phones — spotlight sits on top */
+    #spot{bottom:auto;top:10px;left:8px;right:8px;max-width:none;font-size:12px;
+      max-height:42vh;overflow:auto}
+    #spot.min{max-height:none;overflow:hidden}
   }
   @media (max-width:560px){
     #hdr{padding:6px 10px;flex-wrap:wrap;gap:6px 10px;font-size:12px}
@@ -84,6 +117,7 @@ if ('serviceWorker' in navigator) {
     <span class="t">☤ HERMES PIXEL OFFICE</span>
     <span style="flex:1"></span>
     <span class="dim" id="count">connecting…</span>
+    <span class="btn on" id="spotBtn" title="big readable view of the agent you are watching">◉ focus</span>
     <span class="btn on" id="panelBtn" title="what each agent is doing and thinking">▤ detail</span>
     <span class="btn" id="sound" title="chime when an agent needs approval or a subagent finishes">♪ sound off</span>
     <span class="btn" id="spawn" style="display:none" title="open a terminal running hermes">+ agent</span>
@@ -91,6 +125,7 @@ if ('serviceWorker' in navigator) {
   <div id="tick"><span class="tk empty">◌ no tool calls yet</span></div>
   <div id="main">
     <canvas id="c"></canvas>
+    <div id="spot"></div>
     <aside id="panel"></aside>
   </div>
 </div>
@@ -480,6 +515,13 @@ panelBtn.onclick=()=>{panelOn=!panelOn;
   try{localStorage.setItem("pixelOfficePanel",panelOn?"1":"0")}catch(e){}
   syncPanel()};
 syncPanel();
+// Click a card in the detail panel → spotlight that agent (click again unpin).
+panelEl.addEventListener("click",(e)=>{
+  const c=e.target.closest(".card"); if(!c)return;
+  const id=c.getAttribute("data-agent"); if(!id)return;
+  spotPin=(spotPin===id)?null:id;
+  spotSig=""; renderSpot(agents);
+});
 const STCOL={working:"#5fce7a",thinking:"#c9a227",idle:"#7a6f8f",
   waiting:"#d84f6f",done:"#5fce7a",gone:"#555"};
 const TYPCOL={think:"#c9a227",say:"#7fa8d8",tool:"#9b6fd8",user:"#5fce7a"};
@@ -487,6 +529,8 @@ const pEsc=t=>String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").re
 const flat=t=>String(t==null?"":t).replace(/\s+/g," ").trim();
 // The newest part of a thought/speech is what the agent is on right now.
 function tail(s,n){s=flat(s);return s.length>n?"…"+s.slice(-n):s;}
+// A command/path reads from the START; keep its head.
+function head(s,n){s=flat(s);return s.length>n?s.slice(0,n-1)+"…":s;}
 function ago(ts){if(!ts)return"";const d=Math.max(0,Date.now()/1000-ts);
   return d<1?"now":d<60?Math.round(d)+"s ago":d<3600?Math.round(d/60)+"m ago"
     :Math.round(d/3600)+"h ago";}
@@ -494,26 +538,30 @@ let panelSig="";
 function card(a){
   const L=a.live||{}, st=a.status||"idle";
   const now=st==="waiting"?"needs input! "+(a.detail||"")
-    :a.tool?a.tool+(a.detail?" › "+a.detail:""):(a.activity||st);
+    :a.tool?a.tool+(a.detail?" › "+head(a.detail,300):""):(a.activity||st);
+  const lt=a.last_tool||{};
+  const lastCall=lt.tool?lt.tool+(lt.detail?" › "+head(lt.detail,240):""):"";
   const steps=(L.steps||[]).map(s=>
     `<li><span class="ty" style="color:${TYPCOL[s.t]||"#888"}">${pEsc(s.t)}</span> `+
     `${pEsc(flat((s.n?s.n+" · ":"")+(s.p||"")).slice(0,170))}</li>`).join("");
   const think=flat(L.think), say=flat(L.say);
-  return `<div class="card">
+  return `<div class="card" data-agent="${pEsc(a.id||"")}">
     <div class="h"><span class="dot" style="background:${STCOL[st]||"#7a6f8f"}"></span>
       <b>${pEsc(a.label||a.id)}</b><span class="chip">${pEsc(st)}</span></div>
     <div class="m">${pEsc([a.platform||(a.kind==="subagent"?"subagent":""),
       a.model,ago(L.last_ts||a.updated_at)].filter(Boolean).join(" · "))}</div>
     <div class="now"><span class="lb">now</span>${pEsc(tail(now,300))}</div>
+    ${lastCall?`<div class="last"><span class="lb">last call</span>${pEsc(lastCall)}</div>`:""}
     ${think?`<div class="think"><span class="lb">thinking</span>${pEsc(tail(think,460))}</div>`:""}
     ${say?`<div class="say"><span class="lb">said</span>${pEsc(tail(say,240))}</div>`:""}
+    ${L.result?`<div class="last"><span class="lb">last</span>${pEsc(tail(L.result,400))}</div>`:""}
     ${steps?`<ol class="steps">${steps}</ol>`:""}
   </div>`;
 }
 function renderPanel(list){
   if(!panelOn)return;
   const sig=JSON.stringify(list.map(a=>[a.id,a.status,a.tool,a.detail,a.label,
-    (a.live||{}).think,(a.live||{}).say,((a.live||{}).steps||[]).length]));
+    (a.live||{}).think,(a.live||{}).say,(a.live||{}).result,((a.live||{}).steps||[]).length]));
   if(sig===panelSig)return;              // no change → keep scroll position
   panelSig=sig;
   const keep=panelEl.scrollTop;
@@ -521,9 +569,69 @@ function renderPanel(list){
     :'<div class="empty">office is empty — run something in Hermes ☤</div>';
   panelEl.scrollTop=keep;
 }
+// ── spotlight: one agent, big and readable ──────────────────────────────
+// Focus follows the most recently active agent; click a panel card (or use
+// ◀ ▶) to pin a specific one. Everything here is read from /state only.
+const spotEl=document.getElementById("spot"), spotBtn=document.getElementById("spotBtn");
+let spotOn=true, spotPin=null, spotMin=false;
+try{const v=localStorage.getItem("pixelOfficeSpot"); if(v!==null)spotOn=v==="1";}catch(e){}
+try{const v=localStorage.getItem("pixelOfficeSpotMin"); if(v!==null)spotMin=v==="1";
+  else spotMin=window.innerWidth<900;   // phones start collapsed: canvas stays visible
+}catch(e){spotMin=window.innerWidth<900;}
+function syncSpot(){spotEl.classList.toggle("off",!spotOn);
+  spotEl.classList.toggle("min",spotMin);
+  spotBtn.classList.toggle("on",spotOn)}
+spotBtn.onclick=()=>{spotOn=!spotOn;
+  try{localStorage.setItem("pixelOfficeSpot",spotOn?"1":"0")}catch(e){}
+  syncSpot()};
+syncSpot();
+function focusAgent(list){
+  if(!list.length)return null;
+  if(spotPin){const p=list.find(a=>a.id===spotPin); if(p)return p;}
+  // most recently touched agent wins (live.last_ts, else updated_at)
+  return list.slice().sort((x,y)=>
+    ((y.live&&y.live.last_ts)||y.updated_at||0)-((x.live&&x.live.last_ts)||x.updated_at||0))[0];
+}
+let spotSig="";
+function renderSpot(list){
+  if(!spotOn){spotEl.innerHTML="";spotSig="";return}
+  const a=focusAgent(list);
+  if(!a){spotEl.innerHTML='<div class="empty">office is empty — run something in Hermes ☤</div>';
+    spotSig="";return}
+  const L=a.live||{}, st=a.status||"idle";
+  const now=st==="waiting"?"needs input! "+(a.detail||"")
+    :a.tool?a.tool+(a.detail?" › "+head(a.detail,400):""):(a.activity||st);
+  const lt=a.last_tool||{};
+  const lastCall=lt.tool?lt.tool+(lt.detail?" › "+head(lt.detail,300):""):"";
+  const sig=JSON.stringify([a.id,st,a.tool,a.detail,now,L.think,L.result,L.last_ts,lastCall]);
+  if(sig===spotSig)return;
+  spotSig=sig;
+  const idx=list.findIndex(x=>x.id===a.id);
+  spotEl.innerHTML=`<div class="sh">
+      <span class="dot" style="background:${STCOL[st]||"#7a6f8f"}"></span>
+      <b>${pEsc(a.label||a.id)}</b>
+      <span class="chip">${pEsc(st)}</span>
+      <span class="chip">${pEsc(flat(a.model)||"—")}</span>
+      <span class="chip">${pEsc(ago(L.last_ts||a.updated_at))}</span>
+      <span class="sp"><span id="spotMin" title="collapse / expand">${spotMin?"▸":"▾"}</span><span id="spotPrev">◀</span><span id="spotNext">▶</span></span>
+    </div>
+    <div class="now"><span class="lb">now</span>${pEsc(tail(now,400))}</div>
+    ${lastCall?`<div class="last"><span class="lb">last call</span>${pEsc(lastCall)}</div>`:""}
+    ${L.think?`<div class="think"><span class="lb">thinking</span>${pEsc(tail(L.think,700))}</div>`:""}
+    ${L.result?`<div class="last"><span class="lb">last result</span>${pEsc(tail(L.result,500))}</div>`:""}`;
+  const step=d=>{spotPin=list[(idx+d+list.length)%list.length].id;spotSig="";renderSpot(list)};
+  const p=document.getElementById("spotPrev"), n=document.getElementById("spotNext");
+  if(p)p.onclick=()=>step(-1);
+  if(n)n.onclick=()=>step(1);
+  const mn=document.getElementById("spotMin");
+  if(mn)mn.onclick=()=>{spotMin=!spotMin;
+    try{localStorage.setItem("pixelOfficeSpotMin",spotMin?"1":"0")}catch(e){}
+    syncSpot();spotSig="";renderSpot(list)};
+}
 function applyState(state){
   offline=null; agents=(state&&state.agents)||[];
   renderTick(state&&state.recent);
+  renderSpot(agents);
   renderPanel(agents);
   const n=agents.length, w=agents.filter(a=>a.status==="waiting").length;
   document.getElementById("count").textContent=
