@@ -208,6 +208,13 @@ def _short(text: Any, n: int = 60) -> str:
     return s[: n - 1] + "…" if len(s) > n else s
 
 
+def _tail(text: Any, n: int = 60) -> str:
+    """Last *n* chars, flattened — for text where the newest end is the
+    interesting part (a reasoning block that grew as the turn ran)."""
+    s = str(text or "").strip().replace("\n", " ")
+    return ("…" + s[-n:]) if len(s) > n else s
+
+
 # Human-meaningful identifier for a session, read from the canonical
 # state.db (best-effort, cached in-process). The office folds state every
 # ~1.5 s, but a session's title/platform rarely change, so cache keyed by id.
@@ -282,6 +289,7 @@ def _live_for(sid: str) -> Dict[str, Any]:
         return hit[1]
     out: Dict[str, Any] = {
         "think": "", "say": "", "steps": [], "last_ts": 0.0, "result": "",
+        "think_ts": 0.0,
     }
     steps: List[Dict[str, Any]] = []
     try:
@@ -306,14 +314,19 @@ def _live_for(sid: str) -> Dict[str, Any]:
     for role, tool, content, reasoning, tail, ts in rows:  # newest first
         ts = float(ts or 0)
         out["last_ts"] = max(out["last_ts"], ts)
-        think = _short(reasoning, 900)
+        body = str(content or "").strip()
+        # A user row ends the turn: any reasoning BELOW it belongs to an older
+        # turn, so it must not be shown as the agent's current thought.
+        if role == "user":
+            break
+        think = _tail(reasoning, 900)
         if think and not out["think"]:
             out["think"] = think
-            steps.append({"t": "think", "p": _short(reasoning, 260), "ts": ts})
-        body = str(content or "").strip()
+            out["think_ts"] = ts
+            steps.append({"t": "think", "p": _tail(reasoning, 260), "ts": ts})
         if role == "tool":
             if not out["result"]:
-                out["result"] = _short(tail, 600)
+                out["result"] = _tail(tail, 600)
             steps.append({
                 "t": "tool", "n": str(tool or "tool"),
                 "p": _short(body.splitlines()[0] if body else "", 150), "ts": ts,
@@ -322,8 +335,6 @@ def _live_for(sid: str) -> Dict[str, Any]:
             if not out["say"]:
                 out["say"] = _short(body, 700)
             steps.append({"t": "say", "p": _short(body, 260), "ts": ts})
-        elif role == "user" and body:
-            steps.append({"t": "user", "p": _short(body, 150), "ts": ts})
     out["steps"] = steps[:6]
     _live_cache[sid] = (now, out)
     if len(_live_cache) > 200:  # ponytail: blunt cap; a long-lived server only

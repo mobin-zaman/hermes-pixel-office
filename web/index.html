@@ -62,6 +62,7 @@ if ('serviceWorker' in navigator) {
   #spot .think{color:#c9a227;border-left:2px solid #4a3a1e;padding-left:6px;
     margin:4px 0;word-break:break-word;overflow-wrap:anywhere;max-height:5.2em;overflow:hidden}
   #spot .think .lb{color:#c9a227}
+  #spot .ago{color:#6a5f80;font-size:10px;margin-left:6px}
   #spot .last{color:#7fa8d8;border-left:2px solid #2a3a4a;padding-left:6px;
     margin:4px 0;word-break:break-word;overflow-wrap:anywhere;max-height:5.2em;overflow:hidden}
   #spot .last .lb{color:#7fa8d8}
@@ -85,6 +86,7 @@ if ('serviceWorker' in navigator) {
     text-transform:uppercase;color:#7a6f8f;margin-right:5px}
   .card .think{color:#c9a227;border-left:2px solid #4a3a1e;padding-left:6px;
     margin:4px 0;word-break:break-word}
+  .card .ago{color:#6a5f80;font-size:10px;margin-left:6px}
   .card .say{color:#9fb8d8;border-left:2px solid #2a3a4a;padding-left:6px;
     margin:4px 0;word-break:break-word}
   .card .now .lb{color:#5fce7a}
@@ -525,7 +527,10 @@ panelEl.addEventListener("click",(e)=>{
 const STCOL={working:"#5fce7a",thinking:"#c9a227",idle:"#7a6f8f",
   waiting:"#d84f6f",done:"#5fce7a",gone:"#555"};
 const TYPCOL={think:"#c9a227",say:"#7fa8d8",tool:"#9b6fd8",user:"#5fce7a"};
-const pEsc=t=>String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+// Escape for HTML text AND quoted attribute values — labels/preview/think are
+// agent-authored text and end up inside data-agent="…" attributes.
+const pEsc=t=>String(t==null?"":t).replace(/&/g,"&amp;").replace(/</g,"&lt;")
+  .replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 const flat=t=>String(t==null?"":t).replace(/\s+/g," ").trim();
 // The newest part of a thought/speech is what the agent is on right now.
 function tail(s,n){s=flat(s);return s.length>n?"…"+s.slice(-n):s;}
@@ -552,7 +557,8 @@ function card(a){
       a.model,ago(L.last_ts||a.updated_at)].filter(Boolean).join(" · "))}</div>
     <div class="now"><span class="lb">now</span>${pEsc(tail(now,300))}</div>
     ${lastCall?`<div class="last"><span class="lb">last call</span>${pEsc(lastCall)}</div>`:""}
-    ${think?`<div class="think"><span class="lb">thinking</span>${pEsc(tail(think,460))}</div>`:""}
+    ${think?`<div class="think"><span class="lb">thinking</span>${pEsc(tail(think,460))}`+
+      `<span class="ago">${pEsc(ago(L.think_ts||L.last_ts))}</span></div>`:""}
     ${say?`<div class="say"><span class="lb">said</span>${pEsc(tail(say,240))}</div>`:""}
     ${L.result?`<div class="last"><span class="lb">last</span>${pEsc(tail(L.result,400))}</div>`:""}
     ${steps?`<ol class="steps">${steps}</ol>`:""}
@@ -617,7 +623,8 @@ function renderSpot(list){
     </div>
     <div class="now"><span class="lb">now</span>${pEsc(tail(now,400))}</div>
     ${lastCall?`<div class="last"><span class="lb">last call</span>${pEsc(lastCall)}</div>`:""}
-    ${L.think?`<div class="think"><span class="lb">thinking</span>${pEsc(tail(L.think,700))}</div>`:""}
+    ${L.think?`<div class="think"><span class="lb">thinking</span>${pEsc(tail(L.think,700))}`+
+      `<span class="ago">${pEsc(ago(L.think_ts||L.last_ts))}</span></div>`:""}
     ${L.result?`<div class="last"><span class="lb">last result</span>${pEsc(tail(L.result,500))}</div>`:""}`;
   const step=d=>{spotPin=list[(idx+d+list.length)%list.length].id;spotSig="";renderSpot(list)};
   const p=document.getElementById("spotPrev"), n=document.getElementById("spotNext");
