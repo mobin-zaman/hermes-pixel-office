@@ -419,7 +419,13 @@ function requestFullWin() {
 function render(){
   frame++;
   const W=cv.clientWidth,H=cv.clientHeight;
-  if(cv.width!==W||cv.height!==H){cv.width=W;cv.height=H}
+  const DPR=Math.max(1,window.devicePixelRatio||1);
+  const bw=Math.round(W*DPR),bh=Math.round(H*DPR);
+  if(cv.width!==bw||cv.height!==bh){
+    cv.width=bw;cv.height=bh;
+    ctx.setTransform(DPR,0,0,DPR,0,0);   // absolute, so repeat resizes never compound
+  }
+  ctx.imageSmoothingEnabled=false;
   // Pixel scale stays readable (never 2px) — crowding is handled by scrolling.
   const perRowAt=s=>Math.max(1,Math.floor((Math.floor(W/s)-8)/34));
   S=4;
