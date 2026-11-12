@@ -418,8 +418,16 @@ function requestFullWin() {
 }
 function render(){
   frame++;
+  // TV panels: a 60fps full-scene repaint of the office (plus 4 other iframes
+  // on the same page) starves the MediaTek GPU and everything renders slowly.
+  // 12fps is indistinguishable for this art style and costs 1/5th.
+  const _now = performance.now();
+  if (render._t && _now - render._t < 80) { requestAnimationFrame(render); return; }
+  render._t = _now;
   const W=cv.clientWidth,H=cv.clientHeight;
-  const DPR=Math.max(1,window.devicePixelRatio||1);
+  // Cap DPR at 1.5: a 4K panel reports 2-3, which quadruples fill cost for
+  // pixel art that is already crisp at 1.5.
+  const DPR=Math.min(1.5, Math.max(1,window.devicePixelRatio||1));
   const bw=Math.round(W*DPR),bh=Math.round(H*DPR);
   if(cv.width!==bw||cv.height!==bh){
     cv.width=bw;cv.height=bh;
