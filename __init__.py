@@ -169,38 +169,30 @@ def _model_for(sid: str) -> str:
         return hit[1]
     label = ""
     try:
-        con = sqlite3.connect(
-            f"file:{get_hermes_home()}/state.db?mode=ro", uri=True, timeout=2
-        )
-        try:
-            row = con.execute(
-                "SELECT model FROM sessions WHERE id = ?", (sid,)
-            ).fetchone()
-            routed = (row[0] if row else "") or ""
-            if routed:
-                label = routed
-            # If the session is routed through an alias, the models actually
-            # serving the calls are in session_model_usage; show the one that
-            # did the real work. api_call_count is misleading here (one huge
-            # call counts the same as one tiny one), so rank by tokens.
-            if "auto/" in routed:
-                used = [
-                    r[0]
-                    for r in con.execute(
-                        "SELECT model FROM session_model_usage "
-                        "WHERE session_id = ? AND model NOT LIKE 'auto/%' "
-                        "ORDER BY (input_tokens + output_tokens) DESC LIMIT 1",
-                        (sid,),
-                    )
-                ]
-                if used:
-                    label = f"{routed}→{used[0]}"
-        finally:
-            con.close()
+        con = _db()
+        row = con.execute(
+            "SELECT model FROM sessions WHERE id = ?", (sid,)
+        ).fetchone()
+        routed = (row[0] if row else "") or ""
+        if routed:
+            label = routed
+        if "auto/" in routed:
+            used = [
+                r[0]
+                for r in con.execute(
+                    "SELECT model FROM session_model_usage "
+                    "WHERE session_id = ? AND model NOT LIKE 'auto/%' "
+                    "ORDER BY (input_tokens + output_tokens) DESC LIMIT 1",
+                    (sid,),
+                )
+            ]
+            if used:
+                label = f"{routed}→{used[0]}"
     except Exception:
         label = ""
-    if label:
-        _model_cache[sid] = (now, label)
+    # Cache misses too: a pid-<n> key has no sessions row, and caching only
+    # hits made it re-query on every event of every fold.
+    _model_cache[sid] = (now, label)
     return label
 
 
@@ -244,6 +236,24 @@ def _tail(text: Any, n: int = 60) -> str:
     return ("…" + s[-n:]) if len(s) > n else s
 
 
+# One read-only state.db connection per serving thread, reused across folds.
+# A fresh sqlite3.connect() on this DB costs ~1.1 ms (1.3 GB file + WAL
+# metadata); the fold used to open one PER EVENT (hundreds), which is what
+# made /state take ~400 ms and get slower as events.jsonl grew.
+_db_local = threading.local()
+
+
+def _db() -> sqlite3.Connection:
+    """Thread-local read-only state.db handle (open once, reuse)."""
+    con = getattr(_db_local, "con", None)
+    if con is None:
+        con = sqlite3.connect(
+            f"file:{get_hermes_home()}/state.db?mode=ro", uri=True, timeout=2
+        )
+        _db_local.con = con
+    return con
+
+
 # Human-meaningful identifier for a session, read from the canonical
 # state.db (best-effort, cached in-process). The office folds state every
 # ~1.5 s, but a session's title/platform rarely change, so cache keyed by id.
@@ -257,22 +267,16 @@ def _session_meta(sid: str) -> Optional[Dict[str, Any]]:
         return _meta_cache[sid]
     meta: Optional[Dict[str, Any]] = None
     try:
-        con = sqlite3.connect(
-            f"file:{get_hermes_home()}/state.db?mode=ro", uri=True, timeout=2
-        )
-        try:
-            row = con.execute(
-                "SELECT source, title, title_source FROM sessions WHERE id = ?",
-                (sid,),
-            ).fetchone()
-            if row:
-                meta = {
-                    "source": row[0] or "",
-                    "title": row[1] or "",
-                    "title_source": row[2] or "",
-                }
-        finally:
-            con.close()
+        row = _db().execute(
+            "SELECT source, title, title_source FROM sessions WHERE id = ?",
+            (sid,),
+        ).fetchone()
+        if row:
+            meta = {
+                "source": row[0] or "",
+                "title": row[1] or "",
+                "title_source": row[2] or "",
+            }
     except Exception:
         meta = None
     if meta:  # only cache real rows; misses re-query next poll
@@ -322,22 +326,16 @@ def _live_for(sid: str) -> Dict[str, Any]:
     }
     steps: List[Dict[str, Any]] = []
     try:
-        con = sqlite3.connect(
-            f"file:{get_hermes_home()}/state.db?mode=ro", uri=True, timeout=2
-        )
-        try:
-            # reasoning/content tails (negative substr) so the newest thought
-            # and the newest tool OUTPUT are what we show, not a middle chunk.
-            rows = con.execute(
-                "SELECT role, tool_name, substr(content,1,700), "
-                "substr(coalesce(nullif(reasoning_content,''), reasoning, ''),-1200), "
-                "substr(coalesce(content,''),-700), "
-                "timestamp FROM messages WHERE session_id = ? "
-                "ORDER BY id DESC LIMIT ?",
-                (sid, _LIVE_ROWS),
-            ).fetchall()
-        finally:
-            con.close()
+        # reasoning/content tails (negative substr) so the newest thought
+        # and the newest tool OUTPUT are what we show, not a middle chunk.
+        rows = _db().execute(
+            "SELECT role, tool_name, substr(content,1,700), "
+            "substr(coalesce(nullif(reasoning_content,''), reasoning, ''),-1200), "
+            "substr(coalesce(content,''),-700), "
+            "timestamp FROM messages WHERE session_id = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (sid, _LIVE_ROWS),
+        ).fetchall()
     except Exception:
         return out
     # Best-effort contract: a malformed row must not raise through build_state

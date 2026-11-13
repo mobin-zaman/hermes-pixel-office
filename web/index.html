@@ -418,11 +418,15 @@ function requestFullWin() {
 }
 function render(){
   frame++;
-  // TV panels: a 60fps full-scene repaint of the office (plus 4 other iframes
-  // on the same page) starves the MediaTek GPU and everything renders slowly.
-  // 12fps is indistinguishable for this art style and costs 1/5th.
+  // Adaptive frame budget: the rate follows the PAINT COST, not the device.
+  // A cheap frame (desktop, small window) runs at the browser's full rate; an
+  // expensive one (TV / 4K panel, ~53% of a core at 60fps) drops to 12fps,
+  // where 1/5th the fill cost stops starving the compositor. The old code
+  // throttled unconditionally, so a fast desktop was capped at 12fps too and
+  // the walk animation visibly stepped.
   const _now = performance.now();
-  if (render._t && _now - render._t < 80) { requestAnimationFrame(render); return; }
+  const gap = (render._cost > 8) ? 80 : 0;   // >8ms/frame → 12fps, else uncapped
+  if (gap && render._t && _now - render._t < gap) { requestAnimationFrame(render); return; }
   render._t = _now;
   const W=cv.clientWidth,H=cv.clientHeight;
   // Cap DPR at 1.5: a 4K panel reports 2-3, which quadruples fill cost for
@@ -496,6 +500,10 @@ function render(){
     ctx.fillStyle="rgba(232,193,112,0.35)";
     ctx.fillRect(W-4,4+camY/(worldH-gh||1)*(H-barH-8),2,barH);
   }
+  // Measure this frame's real paint cost (EMA) so the gap above self-tunes:
+  // a TV settles at 12fps, a desktop stays uncapped. Cheap: one subtraction.
+  render._cost = render._cost ? render._cost * 0.9 + (performance.now()-_now) * 0.1
+                              : performance.now()-_now;
   requestAnimationFrame(render);
 }
 
